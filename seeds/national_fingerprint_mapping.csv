@@ -1,0 +1,4 @@
+id,mspp_code,patient_id,national_id,statut
+1,11106,11,HT-00001830,UNIQUE
+2,22207,3,HT-00001830,DOUBLON
+3,11106,12,,A_REVOIR

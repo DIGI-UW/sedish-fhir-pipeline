@@ -1,0 +1,3 @@
+concept_name_id,concept_id,name,locale,locale_preferred,concept_name_type,voided
+1,5089,Weight (kg),en,1,FULLY_SPECIFIED,0
+2,163529,Health facility where mother received prenatal care,en,1,FULLY_SPECIFIED,0

@@ -1,0 +1,28 @@
+test_fhir_patient:
+  model: fhir.patient
+  inputs:
+    consolidated.patient_openmrs:
+      rows:
+        - {patient_id: 11, mspp_code: '11106', voided: 0}
+    consolidated.person_openmrs:
+      rows:
+        - {person_id: 11, mspp_code: '11106', gender: 'M', birthdate: '1990-01-01', uuid: 'uuid-p-11106-11', voided: 0}
+    consolidated.person_name_openmrs:
+      rows:
+        - {person_name_id: 1, person_id: 11, mspp_code: '11106', given_name: 'Jean', family_name: 'Baptiste', preferred: 1, voided: 0}
+    consolidated.person_address_openmrs:
+      rows: []
+    consolidated.patient_identifier_openmrs:
+      rows:
+        - {patient_identifier_id: 1, patient_id: 11, mspp_code: '11106', identifier: 'ST00160', identifier_type: 3, preferred: 1, voided: 0}
+    consolidated.national_fingerprint_mapping:
+      rows:
+        - {id: 1, mspp_code: '11106', patient_id: 11, national_id: 'HT-00001830', statut: 'UNIQUE'}
+    ref.identifier_systems:
+      rows:
+        - {identifier_type: 3, system: 'http://isanteplus.org/openmrs/fhir2/3-isanteplus-id', label: 'iSantePlus ID'}
+  outputs:
+    query:
+      partial: true
+      rows:
+        - {mspp_code: '11106', patient_id: 11, fhir_id: 'uuid-p-11106-11'}

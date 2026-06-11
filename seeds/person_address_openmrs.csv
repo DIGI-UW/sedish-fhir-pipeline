@@ -1,0 +1,2 @@
+person_address_id,person_id,mspp_code,address1,city_village,state_province,country,postal_code,preferred,voided
+1,11,11106,Anba Canal,Dessalines,Artibonite,Haiti,,1,0

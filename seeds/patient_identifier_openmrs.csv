@@ -1,0 +1,4 @@
+patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
+1,11,11106,ST00160,3,1,0
+2,3,22207,PX0042,3,1,0
+3,12,11106,ST00161,3,1,0
