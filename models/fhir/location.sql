@@ -1,6 +1,7 @@
 MODEL (
   name fhir.location,
   kind FULL,
+  cron '*/5 * * * *',
   grain (fhir_id),
   audits (not_null(columns := (fhir_id)))
 );
