@@ -1,6 +1,9 @@
 MODEL (
   name fhir.patient,
-  kind FULL,
+  kind INCREMENTAL_BY_UNIQUE_KEY (unique_key fhir_id),
+  cron '*/5 * * * *',
+  allow_partials true,
+  start '2026-01-01',
   grain (mspp_code, patient_id),
   audits (
     assert_patient_has_identifier,
@@ -13,13 +16,18 @@ MODEL (
   Key = (mspp_code, patient_id); person_id = patient_id. voided filtered out.
   Repeating elements built in CTEs (JSON_ARRAYAGG) then composed by JSON_OBJECT.
   MySQL dialect (JSON_OBJECT / JSON_ARRAYAGG; booleans via CAST(... AS JSON)).
+
+  Incremental: merged by uuid (INCREMENTAL_BY_UNIQUE_KEY). `changed_at` = the latest
+  consolidated-server write (`date_updated`) across the patient's demographic tables;
+  the loader pushes only rows whose changed_at advanced since its last cycle.
 */
 WITH names AS (
   SELECT mspp_code, person_id,
          JSON_ARRAYAGG(JSON_OBJECT(
            'use', CASE WHEN preferred = 1 THEN 'official' ELSE 'usual' END,
            'family', family_name,
-           'given', JSON_ARRAY(given_name))) AS arr
+           'given', JSON_ARRAY(given_name))) AS arr,
+         MAX(COALESCE(date_updated, date_created)) AS chg
   FROM consolidated_db.person_name_openmrs
   WHERE COALESCE(voided, 0) = 0
   GROUP BY mspp_code, person_id
@@ -31,7 +39,8 @@ addresses AS (
            'line', JSON_ARRAY(address1),
            'city', city_village,
            'state', state_province,
-           'country', country)) AS arr
+           'country', country)) AS arr,
+         MAX(COALESCE(date_updated, date_created)) AS chg
   FROM consolidated_db.person_address_openmrs
   WHERE COALESCE(voided, 0) = 0
   GROUP BY mspp_code, person_id
@@ -41,7 +50,8 @@ idents AS (
          JSON_OBJECT(
            'use', CASE WHEN pi.preferred = 1 THEN 'official' ELSE 'usual' END,
            'system', s.system,
-           'value', pi.identifier) AS ident
+           'value', pi.identifier) AS ident,
+         COALESCE(pi.date_updated, pi.date_created) AS chg
   FROM consolidated_db.patient_identifier_openmrs pi
   LEFT JOIN ref.identifier_systems s ON s.identifier_type = pi.identifier_type
   WHERE COALESCE(pi.voided, 0) = 0
@@ -51,18 +61,26 @@ idents AS (
            'use', 'official',
            'type', JSON_OBJECT('text', 'National FP ID'),
            'system', @VAR('national_id_system'),
-           'value', m.national_id)
+           'value', m.national_id),
+         COALESCE(m.updated_at, m.created_at)
   FROM consolidated_db.national_fingerprint_mapping m
   WHERE m.national_id IS NOT NULL AND m.statut IN ('UNIQUE', 'DOUBLON')
 ),
 identifiers AS (
-  SELECT mspp_code, patient_id, JSON_ARRAYAGG(ident) AS arr
+  SELECT mspp_code, patient_id, JSON_ARRAYAGG(ident) AS arr, MAX(chg) AS chg
   FROM idents GROUP BY mspp_code, patient_id
 )
 SELECT
   pt.mspp_code,
   pt.patient_id,
   per.uuid AS fhir_id,
+  GREATEST(
+    COALESCE(per.date_updated, per.date_created, '1970-01-01 00:00:00'),
+    COALESCE(pt.date_updated,  pt.date_created,  '1970-01-01 00:00:00'),
+    COALESCE(nm.chg,  '1970-01-01 00:00:00'),
+    COALESCE(ad.chg,  '1970-01-01 00:00:00'),
+    COALESCE(ids.chg, '1970-01-01 00:00:00')
+  ) AS changed_at,
   JSON_OBJECT(
     'resourceType', 'Patient',
     'id', per.uuid,

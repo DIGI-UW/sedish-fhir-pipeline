@@ -1,15 +1,22 @@
 MODEL (
   name fhir.encounter,
-  kind FULL,
+  kind INCREMENTAL_BY_UNIQUE_KEY (unique_key fhir_id),
+  cron '*/5 * * * *',
+  allow_partials true,
+  start '2026-01-01',
   grain (mspp_code, encounter_id),
   audits (not_null(columns := (mspp_code, encounter_id, fhir_id)))
 );
 
-/* encounter_openmrs -> FHIR Encounter; subject references the patient (person uuid). */
+/* encounter_openmrs -> FHIR Encounter; subject references the patient (person uuid).
+   Merged by uuid; `changed_at` = the encounter's consolidated-server write time;
+   `patient_fhir_id` lets the loader attach this to its patient's bundle. */
 SELECT
   e.mspp_code,
   e.encounter_id,
   e.uuid AS fhir_id,
+  per.uuid AS patient_fhir_id,
+  COALESCE(e.date_updated, e.date_created, '1970-01-01 00:00:00') AS changed_at,
   JSON_OBJECT(
     'resourceType', 'Encounter',
     'id', e.uuid,

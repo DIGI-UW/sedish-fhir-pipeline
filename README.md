@@ -100,29 +100,36 @@ curl -s 'http://hapi-fhir:8080/fhir/Encounter/<uuid>'
 
 ## Continuous operation (not a one-time run)
 
-The pipeline has to be **always on**: the instant a new/updated patient lands in
-`consolidated_db`, it should propagate to OpenCR + SHR. Two layers make that work:
+The pipeline is **always on**: the instant a new/updated patient lands in
+`consolidated_db`, it propagates to OpenCR + SHR. Two layers make that work, both implemented:
 
-1. **Incremental models.** Set the `fhir.*` models to `INCREMENTAL_BY_*` keyed on the
-   source change column (`date_updated` / `date_changed`). `sqlmesh run` then only
-   re-evaluates rows changed since the last cycle, tracking the high-water mark itself —
-   so each cycle is cheap regardless of how big `consolidated_db` is.
-2. **A driver that keeps firing.** `loader/run_continuous.sh` loops *`sqlmesh run` → load
-   → sleep `INTERVAL`*. Latency ≈ `INTERVAL` (default 30s). Run it as a long-lived service
-   (systemd unit / swarm service) alongside the rest of the SEDISH stack.
+1. **Incremental models.** The `fhir.*` models are `INCREMENTAL_BY_UNIQUE_KEY (unique_key
+   fhir_id)` with `allow_partials true` and `cron '*/5 * * * *'`. They **merge by uuid**
+   (an updated record upserts in place — no stale duplicates), and each carries a
+   **`changed_at`** column = the latest `date_updated` from its source tables (the moment
+   the consolidated server wrote the row). `date_updated` is the right watermark:
+   `date_changed` is NULL on never-edited rows (misses new patients), `date_created` misses
+   updates.
+2. **A delta loader on a loop.** `loader/run_continuous.sh` loops *`sqlmesh run` → load →
+   sleep `INTERVAL`*. The loader keeps a per-resource high-water mark (in an isolated
+   `loader_state` table) and pushes **only rows with `changed_at` > last mark** — patients
+   that changed, plus patients with any changed encounter/observation (their `changed_at`
+   advances; the loader fetches the current Patient and bundles only the changed clinical).
 
 ```
-consolidated_db (changed rows)  ──sqlmesh run──▶  fhir.* (delta)  ──loader──▶  OpenCR + SHR
-        ▲ CDC from sites                  └──────────────── every INTERVAL, forever ───────────┘
+consolidated_db (changed rows)  ──sqlmesh run──▶  fhir.* (merged by uuid)  ──loader (Δ only)──▶  OpenCR + SHR
+        ▲ CDC from sites                  └──────────────────── every cycle, forever ───────────────────┘
 ```
 
-**Event-driven (lower latency).** The consolidated server already streams binlog changes to
-Kafka. Instead of a fixed `sleep`, a consumer can block on that topic and trigger one cycle
-per batch of new patient events (debounced) — the loop body is identical, only the *trigger*
-changes from a timer to an event. Use this when 30s isn't tight enough.
+**Latency** ≈ 5 min — SQLMesh's minimum `cron`. The loader then pushes within its `INTERVAL`.
+**Event-driven (tighter).** The consolidated server already streams binlog changes to Kafka.
+Instead of the timer, a consumer can block on that topic and, per batch of new patient events,
+trigger a targeted `sqlmesh plan --restate-model … && load` — same body, event trigger instead
+of cron. Use this when 5 min isn't tight enough.
 
-**Why re-running is safe.** Both stages are **idempotent**: SQLMesh only emits changed rows,
-and the loader **PUTs by uuid** (OpenCR de-dups identities; the SHR re-points clinical refs).
+**Why re-running is safe.** Both stages are **idempotent**: SQLMesh merges by uuid, and the
+loader **PUTs by uuid** (OpenCR de-dups identities; the SHR re-points clinical refs). Overlaps
+and retries converge — never a duplicate patient or encounter.
 A cycle that overlaps or retries converges — it never double-creates a patient or an encounter.
 
 > Today the models are still `FULL` (correct, but re-reads everything each cycle — fine for
@@ -149,7 +156,7 @@ config.template.yaml   gateways (mysql connection + test_connection), FHIR-syste
 external_models.yaml   typed schemas of the consolidated_db source tables (read live)
 models/fhir/           the mapping: patient.sql, encounter.sql, observation.sql  (→ FHIR JSON)
 models/ref_*           reference mappings (identifier_type → FHIR system), SEED
-loader/                push_to_openhim.py — load fhir.* into OpenCR (/CR) + SHR (/SHR)
+loader/                push_to_openhim.py (delta load → OpenCR /CR + SHR /SHR), run_continuous.sh (loop)
 audits/                data assertions (e.g. every Patient has an identifier)
 tests/<domain>/        SQLMesh unit tests by domain (patient / encounter / observation)
 documentation/domains/ per-resource mapping notes
@@ -164,4 +171,4 @@ gated on data CHARESS still owes, not on the pipeline:
 - **No `concept_reference_*`** → Observations use `concept_name` labels + local code (no CIEL codings yet).
 - **Dimension tables data-less** (`patient_identifier_type`, `encounter_type`, `site`, visit-type) — need the rows to finalize identifier systems / `Encounter.type`.
 - **iSantePlus domain tables are derived denormalizations** (incl. `patient_isanteplus`, declared as a source) — publish canonical `obs`/`encounter`, not these (avoid double-counting).
-- **Incremental kind:** models are `FULL` for now; move to `INCREMENTAL_BY_*` for production volumes.
+- **Source-side pruning (optimization):** models merge by uuid over the full source each cycle (correct, and the delta loader bounds what's pushed). Adding `WHERE changed_at BETWEEN @start_dt AND @end_dt` would prune the source scan too — worthwhile only at large volume.

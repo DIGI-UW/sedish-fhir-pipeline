@@ -1,6 +1,9 @@
 MODEL (
   name fhir.observation,
-  kind FULL,
+  kind INCREMENTAL_BY_UNIQUE_KEY (unique_key fhir_id),
+  cron '*/5 * * * *',
+  allow_partials true,
+  start '2026-01-01',
   grain (mspp_code, obs_id),
   audits (assert_observation_has_subject)
 );
@@ -9,11 +12,15 @@ MODEL (
   obs_openmrs -> FHIR Observation. code via concept_name (CIEL codings would be
   added once concept_reference_* is confirmed present). value[x] and the optional
   encounter reference are merged in conditionally (JSON_MERGE_PATCH).
+  Merged by uuid; `changed_at` = the obs's consolidated-server write time;
+  `patient_fhir_id` lets the loader attach this to its patient's bundle.
 */
 SELECT
   o.mspp_code,
   o.obs_id,
   o.uuid AS fhir_id,
+  per.uuid AS patient_fhir_id,
+  COALESCE(o.date_updated, o.date_created, '1970-01-01 00:00:00') AS changed_at,
   JSON_MERGE_PATCH(
     JSON_MERGE_PATCH(
       JSON_OBJECT(
