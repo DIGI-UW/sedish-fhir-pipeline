@@ -5,6 +5,11 @@ loads it into SEDISH's **OpenCR (MPI)** and **SHR**. In the Roaming Care archite
 this repo is the **"Script Py"** between the *Consolidé* server and *SEDISH* — it turns
 consolidated medical data into FHIR and pushes it through OpenHIM.
 
+This is a **continuous** pipeline, not a one-time/batch job. A patient created at any site
+reaches the consolidated server (CDC), and from that moment must flow into OpenCR + SHR on
+its own — so the transform + load run on a loop (or off CDC events) in near-real-time. See
+[Continuous operation](#continuous-operation-not-a-one-time-run).
+
 ## Where it fits
 
 ![SEDISH / Roaming Care architecture](docs/architecture.png)
@@ -80,9 +85,10 @@ python loader/push_to_openhim.py          # add DRY_RUN=1 to preview without wri
 The loader is **idempotent** (PUT by uuid) so it's safe to re-run. Defaults match a stock
 SEDISH swarm (`openhim-core:5001`, clients `openshr` / `shr-pipeline`); override via env.
 
-**4. Schedule** — run steps 2–3 on a timer (cron / SQLMesh scheduler). Switch the models
-from `FULL` to `INCREMENTAL_BY_*` (keyed on `date_changed`) for production volumes so each
-run only processes changed rows.
+**4. Run it continuously** (the production mode — see below)
+```bash
+INTERVAL=30 bash loader/run_continuous.sh    # loop: sqlmesh run → load → sleep
+```
 
 **5. Verify**
 ```bash
@@ -91,6 +97,37 @@ curl -su openshr:openshr 'http://openhim-core:5001/CR/fhir/Patient?identifier=<n
 # clinical: the encounters/observations landed (SHR normalizes subject → golden record)
 curl -s 'http://hapi-fhir:8080/fhir/Encounter/<uuid>'
 ```
+
+## Continuous operation (not a one-time run)
+
+The pipeline has to be **always on**: the instant a new/updated patient lands in
+`consolidated_db`, it should propagate to OpenCR + SHR. Two layers make that work:
+
+1. **Incremental models.** Set the `fhir.*` models to `INCREMENTAL_BY_*` keyed on the
+   source change column (`date_updated` / `date_changed`). `sqlmesh run` then only
+   re-evaluates rows changed since the last cycle, tracking the high-water mark itself —
+   so each cycle is cheap regardless of how big `consolidated_db` is.
+2. **A driver that keeps firing.** `loader/run_continuous.sh` loops *`sqlmesh run` → load
+   → sleep `INTERVAL`*. Latency ≈ `INTERVAL` (default 30s). Run it as a long-lived service
+   (systemd unit / swarm service) alongside the rest of the SEDISH stack.
+
+```
+consolidated_db (changed rows)  ──sqlmesh run──▶  fhir.* (delta)  ──loader──▶  OpenCR + SHR
+        ▲ CDC from sites                  └──────────────── every INTERVAL, forever ───────────┘
+```
+
+**Event-driven (lower latency).** The consolidated server already streams binlog changes to
+Kafka. Instead of a fixed `sleep`, a consumer can block on that topic and trigger one cycle
+per batch of new patient events (debounced) — the loop body is identical, only the *trigger*
+changes from a timer to an event. Use this when 30s isn't tight enough.
+
+**Why re-running is safe.** Both stages are **idempotent**: SQLMesh only emits changed rows,
+and the loader **PUTs by uuid** (OpenCR de-dups identities; the SHR re-points clinical refs).
+A cycle that overlaps or retries converges — it never double-creates a patient or an encounter.
+
+> Today the models are still `FULL` (correct, but re-reads everything each cycle — fine for
+> low volume, too heavy for production). The one change needed to make continuous operation
+> *scale* is the move to `INCREMENTAL_BY_*` above; the loop and the loader already support it.
 
 ### Verified end-to-end behaviour
 Against a SEDISH stack (two+ sites in `consolidated_db`): two source patients at different
