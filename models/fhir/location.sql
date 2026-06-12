@@ -9,7 +9,12 @@ MODEL (
 /*
   locations -> FHIR Location. GLOBAL reference resource: not patient-scoped, no mspp_code,
   no change timestamp — so kind FULL (small table) and the loader pushes it via its global
-  path (not the per-patient bundle). id = value_reference (the table's PK).
+  path (not the per-patient bundle). address detail in the fhir2 ext/address extension.
+
+  LIMITED vs fhir2: the consolidated `locations` table is a thin code/name reference, so id =
+  value_reference (no OpenMRS location uuid -> won't reconcile with the EMR's uuid-keyed
+  Locations), and partOf / country / contained Provenance / narrative are absent. Full
+  fidelity needs the OpenMRS location table (uuid, parent, country, creator).
 */
 SELECT
   l.value_reference AS fhir_id,
@@ -18,7 +23,13 @@ SELECT
     'id', l.value_reference,
     'name', l.name,
     'status', CASE WHEN COALESCE(l.active, 1) = 1 THEN 'active' ELSE 'inactive' END,
-    'address', JSON_OBJECT('city', l.city_village, 'state', l.state_province)
+    'address', JSON_OBJECT(
+      'extension', JSON_ARRAY(JSON_OBJECT(
+        'url', 'http://fhir.openmrs.org/ext/address',
+        'extension', JSON_ARRAY(JSON_OBJECT(
+          'url', 'http://fhir.openmrs.org/ext/address#address3', 'valueString', l.address3)))),
+      'city', l.city_village,
+      'state', l.state_province)
   ) AS resource
 FROM consolidated_db.locations l
 WHERE l.value_reference IS NOT NULL
