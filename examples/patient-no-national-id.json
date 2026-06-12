@@ -1,0 +1,24 @@
+{
+  "id": "uuid-p-11106-12",
+  "name": [
+    {
+      "use": "official",
+      "given": [
+        "Marie"
+      ],
+      "family": "Pierre"
+    }
+  ],
+  "active": true,
+  "gender": "female",
+  "address": null,
+  "birthDate": "1985-06-15",
+  "identifier": [
+    {
+      "use": "official",
+      "value": "ST00161",
+      "system": "http://isanteplus.org/openmrs/fhir2/3-isanteplus-id"
+    }
+  ],
+  "resourceType": "Patient"
+}

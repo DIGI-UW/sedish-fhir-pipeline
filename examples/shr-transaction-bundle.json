@@ -1,0 +1,135 @@
+{
+  "resourceType": "Bundle",
+  "type": "transaction",
+  "entry": [
+    {
+      "resource": {
+        "id": "uuid-p-11106-11",
+        "name": [
+          {
+            "use": "official",
+            "given": [
+              "Jean"
+            ],
+            "family": "Baptiste"
+          }
+        ],
+        "active": true,
+        "gender": "male",
+        "address": [
+          {
+            "use": "home",
+            "city": "Dessalines",
+            "line": [
+              "Anba Canal"
+            ],
+            "state": "Artibonite",
+            "country": "Haiti"
+          }
+        ],
+        "birthDate": "1990-01-01",
+        "identifier": [
+          {
+            "use": "official",
+            "value": "ST00160",
+            "system": "http://isanteplus.org/openmrs/fhir2/3-isanteplus-id"
+          },
+          {
+            "use": "official",
+            "type": {
+              "text": "National FP ID"
+            },
+            "value": "HT-00001830",
+            "system": "http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code"
+          }
+        ],
+        "resourceType": "Patient"
+      },
+      "request": {
+        "method": "PUT",
+        "url": "Patient/uuid-p-11106-11"
+      }
+    },
+    {
+      "resource": {
+        "id": "uuid-e-11106-1",
+        "class": {
+          "code": "AMB",
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode"
+        },
+        "period": {
+          "start": "2026-01-02T09:00:00"
+        },
+        "status": "finished",
+        "subject": {
+          "reference": "Patient/uuid-p-11106-11"
+        },
+        "resourceType": "Encounter"
+      },
+      "request": {
+        "method": "PUT",
+        "url": "Encounter/uuid-e-11106-1"
+      }
+    },
+    {
+      "resource": {
+        "id": "uuid-o-1",
+        "code": {
+          "text": "Weight (kg)",
+          "coding": [
+            {
+              "code": "5089",
+              "system": "http://isanteplus.org/openmrs/concept",
+              "display": "Weight (kg)"
+            }
+          ]
+        },
+        "status": "final",
+        "subject": {
+          "reference": "Patient/uuid-p-11106-11"
+        },
+        "encounter": {
+          "reference": "Encounter/uuid-e-11106-1"
+        },
+        "resourceType": "Observation",
+        "valueQuantity": {
+          "value": 72.5
+        },
+        "effectiveDateTime": "2026-01-02T09:05:00"
+      },
+      "request": {
+        "method": "PUT",
+        "url": "Observation/uuid-o-1"
+      }
+    },
+    {
+      "resource": {
+        "id": "uuid-o-2",
+        "code": {
+          "text": "Prenatal care facility",
+          "coding": [
+            {
+              "code": "163529",
+              "system": "http://isanteplus.org/openmrs/concept",
+              "display": "Prenatal care facility"
+            }
+          ]
+        },
+        "status": "final",
+        "subject": {
+          "reference": "Patient/uuid-p-11106-11"
+        },
+        "encounter": {
+          "reference": "Encounter/uuid-e-11106-1"
+        },
+        "valueString": "Hopital Dessalines",
+        "resourceType": "Observation",
+        "effectiveDateTime": "2026-01-02T09:06:00"
+      },
+      "request": {
+        "method": "PUT",
+        "url": "Observation/uuid-o-2"
+      }
+    }
+  ]
+}

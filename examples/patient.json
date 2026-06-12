@@ -1,0 +1,42 @@
+{
+  "id": "uuid-p-11106-11",
+  "name": [
+    {
+      "use": "official",
+      "given": [
+        "Jean"
+      ],
+      "family": "Baptiste"
+    }
+  ],
+  "active": true,
+  "gender": "male",
+  "address": [
+    {
+      "use": "home",
+      "city": "Dessalines",
+      "line": [
+        "Anba Canal"
+      ],
+      "state": "Artibonite",
+      "country": "Haiti"
+    }
+  ],
+  "birthDate": "1990-01-01",
+  "identifier": [
+    {
+      "use": "official",
+      "value": "ST00160",
+      "system": "http://isanteplus.org/openmrs/fhir2/3-isanteplus-id"
+    },
+    {
+      "use": "official",
+      "type": {
+        "text": "National FP ID"
+      },
+      "value": "HT-00001830",
+      "system": "http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code"
+    }
+  ],
+  "resourceType": "Patient"
+}

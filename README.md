@@ -150,6 +150,9 @@ Encounters/Observations persisted in HAPI with `subject` re-pointed onto the gol
 - `national_id` attached only for `statut ∈ {UNIQUE, DOUBLON}`; **DOUBLON reuses the shared id**.
 - `obs` → `Observation` (`value[x]` by type, `concept_name` label); dateTimes T-separated.
 
+See **[`examples/`](examples/)** for real FHIR output the models emit (Patient with/without a
+national id, Encounter, Observation, and the SHR transaction Bundle the loader sends).
+
 ## Layout
 ```
 config.template.yaml   gateways (mysql connection + test_connection), FHIR-system variables
@@ -160,6 +163,7 @@ loader/                push_to_openhim.py (delta load → OpenCR /CR + SHR /SHR)
 audits/                data assertions (e.g. every Patient has an identifier)
 tests/<domain>/        SQLMesh unit tests by domain (patient / encounter / observation)
 documentation/domains/ per-resource mapping notes
+examples/              real FHIR output the models emit (patient/encounter/observation + SHR bundle)
 docs/architecture.png  the Roaming Care / SEDISH architecture
 schema/                the real consolidated_db DDL dump (authoritative source reference)
 ```

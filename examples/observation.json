@@ -1,0 +1,25 @@
+{
+  "id": "uuid-o-1",
+  "code": {
+    "text": "Weight (kg)",
+    "coding": [
+      {
+        "code": "5089",
+        "system": "http://isanteplus.org/openmrs/concept",
+        "display": "Weight (kg)"
+      }
+    ]
+  },
+  "status": "final",
+  "subject": {
+    "reference": "Patient/uuid-p-11106-11"
+  },
+  "encounter": {
+    "reference": "Encounter/uuid-e-11106-1"
+  },
+  "resourceType": "Observation",
+  "valueQuantity": {
+    "value": 72.5
+  },
+  "effectiveDateTime": "2026-01-02T09:05:00"
+}
