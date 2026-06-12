@@ -25,6 +25,12 @@ test_observation_numeric:
       rows: |
         concept_name_id,concept_id,name,locale_preferred,concept_name_type,voided
         1,5089,Weight (kg),1,FULLY_SPECIFIED,0
+    consolidated_db.concept:
+      format: csv
+      columns: {concept_id: int}
+      rows: |
+        concept_id,uuid
+        9999,uuid-c-9999
   outputs:
     query:
       partial: true
