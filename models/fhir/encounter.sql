@@ -25,8 +25,7 @@ SELECT
     'status', 'finished',
     'class', JSON_OBJECT('system', 'http://terminology.hl7.org/CodeSystem/v3-ActCode', 'code', 'AMB'),
     'subject', JSON_OBJECT('reference', CONCAT('Patient/', per.uuid)),
-    'period', JSON_OBJECT('start', REPLACE(CAST(e.encounter_datetime AS CHAR),' ','T')),
-    'serviceProvider', JSON_OBJECT('reference', CONCAT('Organization/', e.mspp_code), 'display', e.mspp_code)
+    'period', JSON_OBJECT('start', REPLACE(CAST(e.encounter_datetime AS CHAR),' ','T'))
   ) AS resource
 FROM consolidated_db.encounter_openmrs e
 JOIN consolidated_db.person_openmrs per

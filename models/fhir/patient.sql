@@ -96,8 +96,7 @@ SELECT
     'birthDate', CAST(per.birthdate AS CHAR),
     'name', nm.arr,
     'address', ad.arr,
-    'identifier', ids.arr,
-    'managingOrganization', JSON_OBJECT('reference', CONCAT('Organization/', pt.mspp_code), 'display', pt.mspp_code)
+    'identifier', ids.arr
   ) AS resource
 FROM consolidated_db.patient_openmrs pt
 JOIN consolidated_db.person_openmrs per
