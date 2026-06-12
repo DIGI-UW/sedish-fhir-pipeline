@@ -26,6 +26,8 @@ SELECT
       JSON_OBJECT(
         'resourceType', 'Observation',
         'id', o.uuid,
+        'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
+                  'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', o.mspp_code))),
         'status', 'final',
         'code', JSON_OBJECT(
                   'coding', JSON_ARRAY(JSON_OBJECT(

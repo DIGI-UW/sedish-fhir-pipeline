@@ -84,6 +84,10 @@ SELECT
   JSON_OBJECT(
     'resourceType', 'Patient',
     'id', per.uuid,
+    -- facility provenance: originating site (mspp_code). Submitter is the consolidated
+    -- server, so per-record origin lives in the data, not the OpenCR submitting client.
+    'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
+              'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', pt.mspp_code))),
     'active', CAST(IF(COALESCE(per.voided, 0) = 0, 'true', 'false') AS JSON),
     'gender', CASE
                 WHEN per.gender IN ('M', 'Male') THEN 'male'
@@ -92,7 +96,8 @@ SELECT
     'birthDate', CAST(per.birthdate AS CHAR),
     'name', nm.arr,
     'address', ad.arr,
-    'identifier', ids.arr
+    'identifier', ids.arr,
+    'managingOrganization', JSON_OBJECT('reference', CONCAT('Organization/', pt.mspp_code), 'display', pt.mspp_code)
   ) AS resource
 FROM consolidated_db.patient_openmrs pt
 JOIN consolidated_db.person_openmrs per
