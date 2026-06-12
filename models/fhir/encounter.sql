@@ -20,8 +20,10 @@ SELECT
   JSON_OBJECT(
     'resourceType', 'Encounter',
     'id', e.uuid,
-    'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-              'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', e.mspp_code))),
+    'meta', JSON_OBJECT('tag', JSON_ARRAY(
+              JSON_OBJECT('system', 'http://fhir.openmrs.org/ext/encounter-tag',
+                          'code', 'encounter', 'display', 'Encounter'),
+              JSON_OBJECT('system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', e.mspp_code))),
     'status', 'finished',
     'class', JSON_OBJECT('system', 'http://terminology.hl7.org/CodeSystem/v3-ActCode', 'code', 'AMB'),
     'subject', JSON_OBJECT('reference', CONCAT('Patient/', per.uuid)),
