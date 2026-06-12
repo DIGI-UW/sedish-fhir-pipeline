@@ -1,5 +1,5 @@
 [project]
-name = "openmrs-fhir-sqlmesh"
+name = "consolidated-fhir-mapper"
 version = "0.1.0"
 description = "Map the consolidated OpenMRS DB to FHIR (OpenCR + SHR) with SQLMesh. MySQL-only."
 readme = "README.md"

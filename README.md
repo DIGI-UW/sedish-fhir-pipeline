@@ -1,4 +1,4 @@
-# openmrs-fhir-sqlmesh
+# consolidated-fhir-mapper
 
 Maps the **CHARESS consolidated OpenMRS database → FHIR R4** with **SQLMesh**, and
 loads it into SEDISH's **OpenCR (MPI)** and **SHR**. In the Roaming Care architecture
@@ -31,7 +31,7 @@ Reading the whiteboard left-to-right:
 
 ```
  Site 1 ┐
- Site 2 ┤── CDC ──▶  Consolidé: consolidated_db ──▶  [ openmrs-fhir-sqlmesh ]
+ Site 2 ┤── CDC ──▶  Consolidé: consolidated_db ──▶  [ consolidated-fhir-mapper ]
  Site N ┘            (OpenMRS-shaped, multi-site)        │ 1. transform (SQLMesh)
                                                          │     consolidated_db → fhir.patient/encounter/observation
                                                          │ 2. load (loader/)
