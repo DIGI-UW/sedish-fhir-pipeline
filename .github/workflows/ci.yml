@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install sqlmesh pymysql cryptography
+      - run: pip install sqlmesh pymysql cryptography pytest
       - name: Create databases
         run: mysql -h127.0.0.1 -uroot -proot -e "CREATE DATABASE digi_fhir; CREATE DATABASE digi_fhir_test;"
       - name: Write config.yaml
@@ -30,5 +30,9 @@ jobs:
           variables: {national_id_system: 'http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code'}
           disable_anonymized_analytics: true
           YAML
-      - name: Unit tests (MySQL)
+      - name: SQLMesh model tests (MySQL)
         run: sqlmesh test
+      - name: Loader unit tests
+        run: pytest -q
+      - name: Shell script syntax
+        run: bash -n loader/run_continuous.sh

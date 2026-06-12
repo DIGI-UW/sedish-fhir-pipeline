@@ -13,4 +13,8 @@ dependencies = [
 dev = [
     "ruff>=0.6",
     "sqlmesh[web]>=0.235",
+    "pytest>=8",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["loader/tests"]

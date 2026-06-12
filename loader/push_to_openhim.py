@@ -78,6 +78,29 @@ def delta(cur, view, cols, since):
     cur.execute(f"SELECT {cols}, changed_at FROM fhir.{view} WHERE changed_at > %s", (since,))
     return cur.fetchall()
 
+# --- pure helpers (no I/O; unit-tested in loader/tests) -------------------
+def build_bundle(patient, clinical):
+    """FHIR transaction Bundle: patient + its clinical, each PUT by resourceType/id."""
+    return {"resourceType": "Bundle", "type": "transaction",
+            "entry": [{"resource": r, "request": {"method": "PUT", "url": f"{r['resourceType']}/{r['id']}"}}
+                      for r in [patient] + clinical]}
+
+def index_patients(pat_rows):
+    """rows (fhir_id, resource_json, changed_at) -> {fhir_id: resource_dict}."""
+    return {fid: json.loads(res) for fid, res, _ in pat_rows}
+
+def index_clinical(*row_groups):
+    """rows (fhir_id, patient_fhir_id, resource_json, changed_at) -> {patient_fhir_id: [resource_dict]}."""
+    out = collections.defaultdict(list)
+    for rows in row_groups:
+        for _, pid, res, _ in rows:
+            out[pid].append(json.loads(res))
+    return out
+
+def latest_changed(rows):
+    """max changed_at (last tuple element) across rows, or None when empty."""
+    return max((r[-1] for r in rows), default=None)
+
 def main():
     conn = pymysql.connect(**FHIR_DB, autocommit=False)
     with conn.cursor() as cur:
@@ -88,11 +111,8 @@ def main():
         encs = delta(cur, "encounter",   "fhir_id, patient_fhir_id, resource", wm["encounter"])
         obs  = delta(cur, "observation", "fhir_id, patient_fhir_id, resource", wm["observation"])
 
-        patient_by_id = {fid: json.loads(res) for fid, res, _ in pats}
-        clin_by_pat = collections.defaultdict(list)
-        for _, pid, res, _ in encs: clin_by_pat[pid].append(json.loads(res))
-        for _, pid, res, _ in obs:  clin_by_pat[pid].append(json.loads(res))
-
+        patient_by_id = index_patients(pats)
+        clin_by_pat = index_clinical(encs, obs)
         touched = set(patient_by_id) | set(clin_by_pat)
         # patients touched only via clinical: fetch their current Patient resource
         missing = [p for p in touched if p not in patient_by_id]
@@ -105,21 +125,23 @@ def main():
         for pid in sorted(touched):
             patient = patient_by_id.get(pid)
             if not patient:
+                # No Patient row => the patient is voided/filtered. Skip; its clinical
+                # watermark still advances (we won't retry). Safe because consolidated_db
+                # creates the person before its obs/encounter (FK order), so a missing
+                # patient here means intentionally excluded, not a not-yet-arrived race.
                 print(f"  skip {pid}: no Patient row (voided/absent)"); continue
             cr = send(f"{OPENCR_URL}/Patient/{pid}", "PUT", OPENCR, patient)
             mine = clin_by_pat.get(pid, [])
-            bundle = {"resourceType": "Bundle", "type": "transaction",
-                      "entry": [{"resource": r, "request": {"method": "PUT", "url": f"{r['resourceType']}/{r['id']}"}}
-                                for r in [patient] + mine]}
-            shr = send(SHR_URL, "POST", SHR, bundle)
+            shr = send(SHR_URL, "POST", SHR, build_bundle(patient, mine))
             good = cr in ("200", "201", "DRY_RUN") and shr in ("200", "201", "DRY_RUN")
             ok, fail = ok + good, fail + (not good)
             print(f"Patient/{pid}  CR={cr}  SHR={shr}  changed_clinical={len(mine)}")
 
         if not DRY_RUN:
             for rtype, rows in (("patient", pats), ("encounter", encs), ("observation", obs)):
-                if rows:
-                    advance(cur, rtype, max(r[-1] for r in rows))
+                latest = latest_changed(rows)
+                if latest is not None:
+                    advance(cur, rtype, latest)
             conn.commit()
         print(f"DONE  patients_touched={len(touched)} ok={ok} fail={fail}"
               f"  (Δ p={len(pats)} e={len(encs)} o={len(obs)}){'  [DRY_RUN]' if DRY_RUN else ''}")
