@@ -67,6 +67,9 @@ depend on data CHARESS still owes us, not on the mapping engine:
   finalize identifier systems / `Encounter.type` / telecom.
 - **iSantePlus domain tables are derived denormalizations** of obs/encounters — publish
   `obs`/`encounter` (canonical), not the domain tables (avoid double-counting).
+  `patient_isanteplus` is declared in `external_models.yaml` (column names verbatim from
+  the dump, incl. camelCase `maritalStatus`) so it's available for identity cross-checks,
+  but it is **not** yet mapped to a FHIR resource.
 - **Mixed collation:** clinical `*_openmrs` are utf8mb3 while several dimension tables
   are utf8mb4 — varchar joins across them (e.g. `mspp_code` → `site`) need explicit COLLATE.
 - **Incremental kind:** models are `FULL` for the scaffold; switch to `INCREMENTAL_BY_*`

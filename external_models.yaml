@@ -221,6 +221,52 @@
     locale_preferred: INT
   gateway: mysql
 
+# Derived iSantePlus denormalization (flattened per-patient summary; own PK
+# (patient_id, mspp_code, date_created), no person_id, nullable uuid). Column
+# names match the dump verbatim — incl. camelCase `maritalStatus`.
+- name: '`consolidated_db`.`patient_isanteplus`'
+  columns:
+    identifier: VARCHAR(50)
+    st_id: VARCHAR(50)
+    national_id: VARCHAR(50)
+    isante_id: VARCHAR(50)
+    patient_id: INT
+    location_id: INT
+    site_code: TEXT
+    given_name: TEXT
+    family_name: TEXT
+    gender: VARCHAR(10)
+    birthdate: DATE
+    telephone: VARCHAR(50)
+    last_address: TEXT
+    degree: TEXT
+    vih_status: INT
+    arv_status: INT
+    mother_name: TEXT
+    contact_name: TEXT
+    occupation: INT
+    maritalStatus: INT
+    place_of_birth: TEXT
+    creator: VARCHAR(20)
+    date_created: DATE
+    death_date: DATE
+    cause_of_death: TEXT
+    first_visit_date: DATETIME
+    last_visit_date: DATETIME
+    date_started_arv: DATETIME
+    next_visit_date: DATE
+    last_inserted_date: DATETIME
+    last_updated_date: DATETIME
+    transferred_in: INT
+    date_transferred_in: DATETIME
+    date_started_arv_other_site: DATETIME
+    voided: INT
+    synced: INT
+    synced_date: DATETIME
+    mspp_code: VARCHAR(10)
+    uuid: VARCHAR(250)
+  gateway: mysql
+
 # NOT in the 2026-06-11 dump — declared from spec (pending CHARESS delivery).
 - name: '`consolidated_db`.`national_fingerprint_mapping`'
   columns:
