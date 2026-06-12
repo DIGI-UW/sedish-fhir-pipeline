@@ -12,18 +12,22 @@ MODEL (
 );
 
 /*
-  consolidated_db identity rows -> FHIR Patient (one JSON document per patient).
-  Key = (mspp_code, patient_id); person_id = patient_id. voided filtered out.
-  Repeating elements built in CTEs (JSON_ARRAYAGG) then composed by JSON_OBJECT.
-  MySQL dialect (JSON_OBJECT / JSON_ARRAYAGG; booleans via CAST(... AS JSON)).
+  consolidated_db identity rows -> FHIR Patient — shaped to match the OpenMRS fhir2
+  PatientTranslator so the SHR sees the same structure the EMRs produce:
+    * identifier: element id (uuid), use, type.text (from ref.identifier_systems label), system, value
+    * name/address: element id (uuid); address detail in the fhir.openmrs.org/ext/address extension
+    * deceasedBoolean / deceasedDateTime from person.dead / death_date
+    * birthDate is year-only when birthdate_estimated
+  NOT yet matched (need source we don't capture): the contained Provenance (creator ->
+  Practitioner) and the identifier #location extension (location_id -> Location).
 
-  Incremental: merged by uuid (INCREMENTAL_BY_UNIQUE_KEY). `changed_at` = the latest
-  consolidated-server write (`date_updated`) across the patient's demographic tables;
-  the loader pushes only rows whose changed_at advanced since its last cycle.
+  Incremental: merged by uuid; changed_at = latest consolidated-server write across the
+  patient's demographic tables.
 */
 WITH names AS (
   SELECT mspp_code, person_id,
          JSON_ARRAYAGG(JSON_OBJECT(
+           'id', uuid,
            'use', CASE WHEN preferred = 1 THEN 'official' ELSE 'usual' END,
            'family', family_name,
            'given', JSON_ARRAY(given_name))) AS arr,
@@ -35,8 +39,14 @@ WITH names AS (
 addresses AS (
   SELECT mspp_code, person_id,
          JSON_ARRAYAGG(JSON_OBJECT(
+           'id', uuid,
+           'extension', JSON_ARRAY(JSON_OBJECT(
+             'url', 'http://fhir.openmrs.org/ext/address',
+             'extension', JSON_ARRAY(
+               JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address1', 'valueString', address1),
+               JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address2', 'valueString', address2),
+               JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address3', 'valueString', address3)))),
            'use', 'home',
-           'line', JSON_ARRAY(address1),
            'city', city_village,
            'state', state_province,
            'country', country)) AS arr,
@@ -48,7 +58,9 @@ addresses AS (
 idents AS (
   SELECT pi.mspp_code, pi.patient_id,
          JSON_OBJECT(
+           'id', pi.uuid,
            'use', CASE WHEN pi.preferred = 1 THEN 'official' ELSE 'usual' END,
+           'type', JSON_OBJECT('text', s.label),
            'system', s.system,
            'value', pi.identifier) AS ident,
          COALESCE(pi.date_updated, pi.date_created) AS chg
@@ -81,22 +93,32 @@ SELECT
     COALESCE(ad.chg,  '1970-01-01 00:00:00'),
     COALESCE(ids.chg, '1970-01-01 00:00:00')
   ) AS changed_at,
-  JSON_OBJECT(
-    'resourceType', 'Patient',
-    'id', per.uuid,
-    -- facility provenance: originating site (mspp_code). Submitter is the consolidated
-    -- server, so per-record origin lives in the data, not the OpenCR submitting client.
-    'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-              'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', pt.mspp_code))),
-    'active', CAST(IF(COALESCE(per.voided, 0) = 0, 'true', 'false') AS JSON),
-    'gender', CASE
-                WHEN per.gender IN ('M', 'Male') THEN 'male'
-                WHEN per.gender IN ('F', 'Female') THEN 'female'
-                WHEN per.gender IN ('O', 'Other') THEN 'other' ELSE 'unknown' END,
-    'birthDate', CAST(per.birthdate AS CHAR),
-    'name', nm.arr,
-    'address', ad.arr,
-    'identifier', ids.arr
+  JSON_MERGE_PATCH(
+    JSON_OBJECT(
+      'resourceType', 'Patient',
+      'id', per.uuid,
+      -- facility provenance: originating site (mspp_code).
+      'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
+                'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', pt.mspp_code))),
+      'active', CAST(IF(COALESCE(per.voided, 0) = 0, 'true', 'false') AS JSON),
+      'gender', CASE
+                  WHEN per.gender IN ('M', 'Male') THEN 'male'
+                  WHEN per.gender IN ('F', 'Female') THEN 'female'
+                  WHEN per.gender IN ('O', 'Other') THEN 'other' ELSE 'unknown' END,
+      'birthDate', CASE WHEN COALESCE(per.birthdate_estimated, 0) = 1
+                        THEN CAST(YEAR(per.birthdate) AS CHAR)
+                        ELSE CAST(per.birthdate AS CHAR) END,
+      'name', nm.arr,
+      'address', ad.arr,
+      'identifier', ids.arr
+    ),
+    CASE
+      WHEN COALESCE(per.dead, 0) = 1 AND per.death_date IS NOT NULL
+        THEN JSON_OBJECT('deceasedDateTime', REPLACE(CAST(per.death_date AS CHAR), ' ', 'T'))
+      WHEN COALESCE(per.dead, 0) = 1
+        THEN JSON_OBJECT('deceasedBoolean', CAST('true' AS JSON))
+      ELSE JSON_OBJECT('deceasedBoolean', CAST('false' AS JSON))
+    END
   ) AS resource
 FROM consolidated_db.patient_openmrs pt
 JOIN consolidated_db.person_openmrs per
