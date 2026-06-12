@@ -181,6 +181,9 @@ class FakeCursor:
         elif "where changed_at" in s and "from fhir." in s:
             view = s.split("from fhir.", 1)[1].split()[0]   # patient / encounter / observation / …
             self._result = self.data["delta"].get(view, [])
+        elif "from fhir." in s and "where" not in s:        # global full read (push_globals)
+            view = s.split("from fhir.", 1)[1].split()[0]
+            self._result = self.data.get("globals", {}).get(view, [])
         else:
             self._result = []
     def fetchone(self): return self._result[0] if self._result else None
@@ -292,6 +295,19 @@ def test_main_pushes_a_new_clinical_view_allergy(monkeypatch):
     assert [(m, u) for m, u, _, _ in sent] == [("PUT", f"{L.OPENCR_URL}/Patient/pA"), ("POST", L.SHR_URL)]
     assert {e["resource"]["id"] for e in sent[1][3]["entry"]} == {"pA", "al1"}   # patient + allergy bundled
     assert _advances(cur) == {"allergy_intolerance": DT2}
+
+
+def test_main_pushes_global_resources_to_shr_by_id(monkeypatch):
+    # a global resource (Location) is PUT to the SHR by resourceType/id, not patient-bundled
+    loc = json.dumps({"resourceType": "Location", "id": "11106"})
+    data = {"watermark": {}, "patients": {},
+            "delta": {"patient": [], "encounter": [], "observation": []},
+            "globals": {"location": [("11106", loc)]}}
+    monkeypatch.setattr(L, "GLOBAL_VIEWS", ["location"])
+    sent, conn, cur = _run_main(monkeypatch, data)
+    assert ("PUT", f"{L.SHR_URL}/Location/11106") in [(m, u) for m, u, _, _ in sent]
+    # globals go to SHR only, never OpenCR
+    assert all("/CR/" not in u for m, u, _, _ in sent)
 
 
 def test_main_orders_patients_deterministically(monkeypatch):

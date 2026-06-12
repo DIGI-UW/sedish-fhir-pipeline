@@ -39,7 +39,10 @@ DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
 EPOCH = "1970-01-01 00:00:00"
 # patient-scoped clinical views to push (each carries fhir_id, patient_fhir_id, changed_at).
 # Add a resource = a SQLMesh model + an entry here.
-CLINICAL_VIEWS = [v.strip() for v in env("CLINICAL_VIEWS", "encounter,observation,allergy_intolerance,condition").split(",") if v.strip()]
+CLINICAL_VIEWS = [v.strip() for v in env("CLINICAL_VIEWS", "encounter,observation,allergy_intolerance,condition,medication_request").split(",") if v.strip()]
+# global (non-patient-scoped) resources: pushed to the SHR directly (not bundled per
+# patient, not enrolled in OpenCR). Small reference resources, re-pushed each cycle (idempotent).
+GLOBAL_VIEWS = [v.strip() for v in env("GLOBAL_VIEWS", "location").split(",") if v.strip()]
 
 def _auth(c): return "Basic " + base64.b64encode(f"{c[0]}:{c[1]}".encode()).decode()
 
@@ -104,6 +107,25 @@ def latest_changed(rows):
     """max changed_at (last tuple element) across rows, or None when empty."""
     return max((r[-1] for r in rows), default=None)
 
+def push_globals(cur):
+    """Push global (non-patient-scoped) resources straight to the SHR by id. Idempotent;
+    re-pushed each cycle (these tables are small reference data, often without a change
+    timestamp). Returns the failure count. Globals never go to OpenCR."""
+    pushed = ok = 0
+    for view in GLOBAL_VIEWS:
+        try:
+            cur.execute(f"SELECT fhir_id, resource FROM fhir.{view}")
+            rows = cur.fetchall()
+        except Exception as e:  # noqa: BLE001 — view may not exist yet
+            print(f"  globals: skip {view} ({e})"); continue
+        for _fid, res in rows:
+            r = json.loads(res)
+            st = send(f"{SHR_URL}/{r['resourceType']}/{r['id']}", "PUT", SHR, r)
+            ok += st in ("200", "201", "DRY_RUN"); pushed += 1
+    if pushed:
+        print(f"  globals: pushed {ok}/{pushed} ({','.join(GLOBAL_VIEWS)})")
+    return pushed - ok
+
 def main():
     conn = pymysql.connect(**FHIR_DB, autocommit=False)
     with conn.cursor() as cur:
@@ -140,6 +162,8 @@ def main():
             good = cr in ("200", "201", "DRY_RUN") and shr in ("200", "201", "DRY_RUN")
             ok, fail = ok + good, fail + (not good)
             print(f"Patient/{pid}  CR={cr}  SHR={shr}  changed_clinical={len(mine)}")
+
+        push_globals(cur)   # global reference resources (Location, …) -> SHR, best-effort
 
         if not DRY_RUN:
             if fail == 0:

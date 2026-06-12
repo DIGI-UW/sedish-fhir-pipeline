@@ -251,6 +251,38 @@
     mspp_code: VARCHAR(10)
   gateway: mysql
 
+# iSantePlus DERIVED prescriptions (no uuid -> MedicationRequest synthetic id; drug/provider
+# are ids only — no name table captured, so low fidelity).
+- name: '`consolidated_db`.`patient_prescription`'
+  columns:
+    patient_id: INT
+    visit_id: INT
+    location_id: INT
+    encounter_id: INT
+    provider_id: INT
+    drug_id: INT
+    visit_date: DATETIME
+    dispensation_date: DATE
+    posology: TEXT
+    number_day: DOUBLE
+    arv_drug: INT
+    voided: INT
+    date_updated: DATETIME
+    last_updated_date: DATETIME
+    mspp_code: VARCHAR(10)
+  gateway: mysql
+
+# GLOBAL reference table (no mspp_code, no patient, no timestamp) -> FHIR Location.
+- name: '`consolidated_db`.`locations`'
+  columns:
+    location_id: INT
+    name: VARCHAR(100)
+    value_reference: VARCHAR(10)
+    city_village: VARCHAR(100)
+    state_province: VARCHAR(100)
+    active: INT
+  gateway: mysql
+
 # iSantePlus DERIVED diagnoses table (no uuid -> Condition uses a synthetic id).
 - name: '`consolidated_db`.`patient_diagnosis`'
   columns:

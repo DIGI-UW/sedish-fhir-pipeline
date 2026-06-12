@@ -1,0 +1,49 @@
+MODEL (
+  name fhir.medication_request,
+  kind INCREMENTAL_BY_UNIQUE_KEY (unique_key fhir_id),
+  cron '*/5 * * * *',
+  allow_partials true,
+  start '2026-01-01',
+  grain (fhir_id),
+  audits (not_null(columns := (mspp_code, fhir_id)))
+);
+
+/*
+  patient_prescription (iSantePlus DERIVED) -> FHIR MedicationRequest. No uuid, so the id
+  is a stable MD5 over the natural PK (encounter_id, location_id, drug_id, mspp_code). LOW
+  FIDELITY: drug_id and provider_id are ids only (no drug/provider name tables captured in
+  consolidated_db) — medication is a bare code, requester a bare Practitioner reference.
+  dosage from posology + number_day. Upgrade once drug/provider reference data is captured.
+*/
+SELECT
+  pp.mspp_code,
+  pp.patient_id,
+  CONCAT('medreq-', MD5(CONCAT_WS('|', pp.mspp_code, pp.encounter_id, pp.location_id, pp.drug_id))) AS fhir_id,
+  per.uuid AS patient_fhir_id,
+  COALESCE(pp.date_updated, pp.last_updated_date, '1970-01-01 00:00:00') AS changed_at,
+  JSON_MERGE_PATCH(
+    JSON_OBJECT(
+      'resourceType', 'MedicationRequest',
+      'id', CONCAT('medreq-', MD5(CONCAT_WS('|', pp.mspp_code, pp.encounter_id, pp.location_id, pp.drug_id))),
+      'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
+                'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', pp.mspp_code))),
+      'status', 'active',
+      'intent', 'order',
+      'subject', JSON_OBJECT('reference', CONCAT('Patient/', per.uuid)),
+      'authoredOn', REPLACE(CAST(COALESCE(pp.visit_date, pp.dispensation_date) AS CHAR), ' ', 'T'),
+      'medicationCodeableConcept', JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
+                'system', 'http://isanteplus.org/openmrs/drug', 'code', CAST(pp.drug_id AS CHAR)))),
+      'dosageInstruction', JSON_ARRAY(JSON_OBJECT(
+                'text', pp.posology,
+                'timing', JSON_OBJECT('repeat', JSON_OBJECT('boundsDuration', JSON_OBJECT(
+                  'value', pp.number_day, 'unit', 'd',
+                  'system', 'http://unitsofmeasure.org', 'code', 'd')))))
+    ),
+    CASE WHEN pp.provider_id IS NOT NULL
+         THEN JSON_OBJECT('requester', JSON_OBJECT('reference', CONCAT('Practitioner/', CAST(pp.provider_id AS CHAR))))
+         ELSE JSON_OBJECT() END
+  ) AS resource
+FROM consolidated_db.patient_prescription pp
+JOIN consolidated_db.person_openmrs per
+  ON per.mspp_code = pp.mspp_code AND per.person_id = pp.patient_id
+WHERE COALESCE(pp.voided, 0) = 0
