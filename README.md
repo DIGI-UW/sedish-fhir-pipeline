@@ -121,11 +121,21 @@ consolidated_db (changed rows)  ──sqlmesh run──▶  fhir.* (merged by uu
         ▲ CDC from sites                  └──────────────────── every cycle, forever ───────────────────┘
 ```
 
-**Latency** ≈ 5 min — SQLMesh's minimum `cron`. The loader then pushes within its `INTERVAL`.
-**Event-driven (tighter).** The consolidated server already streams binlog changes to Kafka.
-Instead of the timer, a consumer can block on that topic and, per batch of new patient events,
-trigger a targeted `sqlmesh plan --restate-model … && load` — same body, event trigger instead
-of cron. Use this when 5 min isn't tight enough.
+**Two drivers** (pick with `RUN_MODE` on the Docker image, default `kafka`):
+- **`loader/run_kafka.py` (event-driven, default).** Consumes the consolidated server's
+  existing `fhir.patient.changed` Kafka topic, debounces a burst, and runs one cycle
+  (`sqlmesh run` → loader). No idle work; events buffer/replay in Kafka if OpenHIM is down.
+  The payload is ignored — events are a *trigger*; correctness is the incremental models +
+  the loader watermark, so a missed/duplicate event only causes a redundant idempotent cycle.
+- **`loader/run_continuous.sh` (poll).** The no-Kafka fallback: `sqlmesh run` → load →
+  sleep `INTERVAL`.
+
+**Latency** ≈ 5 min — SQLMesh's minimum `cron` — regardless of driver; Kafka mainly buys
+idle-efficiency + buffering, not sub-cron latency.
+
+**Deploy:** the `Dockerfile` builds the pipeline image (renders `config.yaml` from env,
+applies the initial `sqlmesh plan`, then serves `RUN_MODE`). It runs as the `fhir-pipeline`
+service of the SEDISH **`hie`** stack, alongside the consolidated server + Kafka.
 
 **Why re-running is safe.** Both stages are **idempotent**: SQLMesh merges by uuid, and the
 loader **PUTs by uuid** (OpenCR de-dups identities; the SHR re-points clinical refs). Overlaps
