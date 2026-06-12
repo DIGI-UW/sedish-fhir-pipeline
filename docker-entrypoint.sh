@@ -22,10 +22,27 @@ variables: {national_id_system: '${NATIONAL_ID_SYSTEM}'}
 disable_anonymized_analytics: true
 YAML
 
-# Build/refresh the output schema. Retry: consolidated_db (the source the external
-# models read) may still be initialising / unpopulated when we start.
+# Wait for the MySQL server and ensure the SQLMesh output/state schema exists
+# (the default gateway connects to FHIR_DB_NAME). Idempotent.
+echo "entrypoint: waiting for MySQL + ensuring schema ${FHIR_DB_NAME}"
+until python - <<PY 2>/dev/null
+import pymysql, os
+c = pymysql.connect(host="${FHIR_DB_HOST}", port=${FHIR_DB_PORT},
+                    user="${FHIR_DB_USER}", password="${FHIR_DB_PASS}")
+with c.cursor() as cur:
+    cur.execute("CREATE DATABASE IF NOT EXISTS \`${FHIR_DB_NAME}\`")
+    cur.execute("CREATE DATABASE IF NOT EXISTS \`${FHIR_TEST_DB}\`")
+c.commit()
+PY
+do
+  echo "entrypoint: MySQL not ready, retrying in 5s"; sleep 5
+done
+
+# Build/refresh the output schema. Tests are a CI gate, not a deploy gate, so
+# --skip-tests here. Retry: consolidated_db (the source the external models read)
+# may still be initialising / unpopulated when we start.
 echo "entrypoint: applying initial sqlmesh plan (retrying until consolidated_db is ready)"
-until sqlmesh plan --auto-apply; do
+until sqlmesh plan --auto-apply --skip-tests; do
   echo "entrypoint: plan not ready yet, retrying in 10s"
   sleep 10
 done
