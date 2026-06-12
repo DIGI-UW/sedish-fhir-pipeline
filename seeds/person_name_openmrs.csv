@@ -1,4 +1,4 @@
-person_name_id,person_id,mspp_code,prefix,given_name,middle_name,family_name,family_name2,preferred,voided
-1,11,11106,,Jean,,Baptiste,,1,0
-2,3,22207,,Jean,,Baptiste,,1,0
-3,12,11106,,Marie,,Pierre,,1,0
+person_name_id,preferred,person_id,prefix,given_name,middle_name,family_name_prefix,family_name,family_name2,family_name_suffix,degree,creator,date_created,voided,voided_by,date_voided,void_reason,changed_by,date_changed,uuid,synced,synced_date,date_updated,location_id,mspp_code
+1,1,11,,Jean,,,Baptiste,,,,,,0,,,,,,,,,,,11106
+2,1,3,,Jean,,,Baptiste,,,,,,0,,,,,,,,,,,22207
+3,1,12,,Marie,,,Pierre,,,,,,0,,,,,,,,,,,11106

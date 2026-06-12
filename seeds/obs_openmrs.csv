@@ -1,5 +1,5 @@
-obs_id,person_id,mspp_code,concept_id,encounter_id,obs_datetime,value_coded,value_numeric,value_datetime,value_text,value_drug,uuid,voided
-1,11,11106,5089,1,2026-01-02 09:05:00,,72.5,,,,uuid-o-11106-1,0
-2,11,11106,163529,1,2026-01-02 09:06:00,,,,Hopital Dessalines,,uuid-o-11106-2,0
-3,3,22207,5089,2,2026-02-10 10:05:00,,73.0,,,,uuid-o-22207-3,0
-4,12,11106,5089,,2026-03-01 08:05:00,,60.0,,,,uuid-o-11106-4,0
+obs_id,person_id,concept_id,encounter_id,order_id,obs_datetime,location_id,obs_group_id,accession_number,value_group_id,value_coded,value_coded_name_id,value_drug,value_datetime,value_numeric,value_modifier,value_text,value_complex,comments,creator,date_created,voided,voided_by,date_voided,void_reason,uuid,previous_version,form_namespace_and_path,date_changed,synced,synced_date,date_updated,mspp_code
+1,11,5089,1,,2026-01-02 09:05:00,,,,,,,,,72.5,,,,,,,0,,,,uuid-o-11106-1,,,,,,,11106
+2,11,163529,1,,2026-01-02 09:06:00,,,,,,,,,,,Hopital Dessalines,,,,,0,,,,uuid-o-11106-2,,,,,,,11106
+3,3,5089,2,,2026-02-10 10:05:00,,,,,,,,,73.0,,,,,,,0,,,,uuid-o-22207-3,,,,,,,22207
+4,12,5089,,,2026-03-01 08:05:00,,,,,,,,,60.0,,,,,,,0,,,,uuid-o-11106-4,,,,,,,11106

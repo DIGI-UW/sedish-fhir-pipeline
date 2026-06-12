@@ -1,4 +1,4 @@
-person_id,mspp_code,gender,birthdate,dead,death_date,uuid,voided
-11,11106,M,1990-01-01,0,,uuid-p-11106-11,0
-3,22207,M,1990-01-01,0,,uuid-p-22207-3,0
-12,11106,F,1985-06-15,0,,uuid-p-11106-12,0
+person_id,gender,birthdate,birthdate_estimated,dead,death_date,cause_of_death,creator,date_created,changed_by,date_changed,voided,voided_by,date_voided,void_reason,uuid,deathdate_estimated,birthtime,synced,synced_date,date_updated,location_id,mspp_code
+11,M,1990-01-01,,0,,,,,,,0,,,,uuid-p-11106-11,,,,,,,11106
+3,M,1990-01-01,,0,,,,,,,0,,,,uuid-p-22207-3,,,,,,,22207
+12,F,1985-06-15,,0,,,,,,,0,,,,uuid-p-11106-12,,,,,,,11106

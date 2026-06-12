@@ -47,3 +47,21 @@ Verified end-to-end on the seed fixtures: `sqlmesh plan` builds, audits pass, th
 - **Incremental kind:** models are `FULL` for the scaffold; switch to `INCREMENTAL_BY_*` (keyed on `mspp_code`/`date_changed`) for the real volumes.
 - **Empty repeating elements** currently render as `null` (e.g. `address`) — omit for strict FHIR validity.
 - A **loader** (consolidated FHIR rows → OpenHIM `/SHR/fhir` + `/CR/fhir`) is a separate step.
+
+## Source schema (from the real dump, 2026-06-11)
+`schema/consolidated_db_schema.sql` is the authoritative DDL (schema-only) from the
+consolidated server. The `models/sources/*` seed models now mirror the **real
+column lists/types** so dev matches prod. Reconciliation notes:
+- **`national_fingerprint_mapping` is NOT in the dump** — the biometric national_id /
+  DOUBLON identity core is pending separate delivery. The `fhir.patient` national_id
+  logic stays inert until it arrives (kept as a spec-based seed for now).
+- **No `concept_reference_*`** → no CIEL codings; Observation uses `concept_name`
+  labels + local concept code (already the graceful default).
+- **iSantePlus domain tables are derived denormalizations** of obs/encounters — publish
+  `obs`/`encounter` (canonical), not the domain tables (avoid double-counting).
+- **Mixed collation:** clinical `*_openmrs` are utf8mb3; `patient_identifier_type`,
+  `person_attribute_type`, `encounter_type`, `site`, `patient_laboratory_isanteplus`
+  are utf8mb4 — varchar joins across them (e.g. `mspp_code` to `site`) need explicit COLLATE in MySQL.
+- **Dimension tables present but data-less** in the dump — need the rows
+  (`patient_identifier_type`, `encounter_type`, `person_attribute_type`, `site`, visit-type)
+  to finalize identifier systems / Encounter.type / telecom.
