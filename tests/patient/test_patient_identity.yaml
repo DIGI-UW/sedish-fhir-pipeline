@@ -1,0 +1,49 @@
+test_patient_identity:
+  model: fhir.patient
+  inputs:
+    consolidated_db.patient_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), voided: int}
+      rows: |
+        patient_id,mspp_code,voided
+        11,11106,0
+    consolidated_db.person_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), gender: varchar(50), birthdate: date, dead: int, voided: int}
+      rows: |
+        person_id,mspp_code,gender,birthdate,dead,uuid,voided
+        11,11106,M,1990-01-01,0,uuid-p-11106-11,0
+    consolidated_db.person_name_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), preferred: int, voided: int}
+      rows: |
+        person_name_id,person_id,mspp_code,given_name,family_name,preferred,voided
+        1,11,11106,Jean,Baptiste,1,0
+    consolidated_db.person_address_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), preferred: int, voided: int}
+      rows: |
+        person_address_id,person_id,mspp_code,address1,city_village,country,preferred,voided
+        1,11,11106,Anba Canal,Dessalines,Haiti,1,0
+    consolidated_db.patient_identifier_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), identifier_type: int, preferred: int, voided: int}
+      rows: |
+        patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
+        1,11,11106,ST00160,3,1,0
+    consolidated_db.national_fingerprint_mapping:
+      format: csv
+      columns: {mspp_code: varchar(20), patient_id: int}
+      rows: |
+        id,mspp_code,patient_id,national_id,statut
+        1,11106,11,HT-00001830,UNIQUE
+    ref.identifier_systems:
+      format: csv
+      rows: |
+        identifier_type,system,label
+        3,http://isanteplus.org/openmrs/fhir2/3-isanteplus-id,iSantePlus ID
+  outputs:
+    query:
+      partial: true
+      rows:
+        - {mspp_code: '11106', patient_id: 11, fhir_id: uuid-p-11106-11}

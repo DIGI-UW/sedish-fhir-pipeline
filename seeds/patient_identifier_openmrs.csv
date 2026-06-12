@@ -1,4 +1,0 @@
-patient_identifier_id,patient_id,identifier,identifier_type,location_id,preferred,date_created,date_changed,voided,voided_by,date_voided,void_reason,creator,uuid,synced,synced_date,date_updated,mspp_code
-1,11,ST00160,3,,1,,,0,,,,,,,,,11106
-2,3,PX0042,3,,1,,,0,,,,,,,,,22207
-3,12,ST00161,3,,1,,,0,,,,,,,,,11106

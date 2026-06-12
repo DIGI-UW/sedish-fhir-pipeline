@@ -1,0 +1,32 @@
+test_observation_numeric:
+  model: fhir.observation
+  inputs:
+    consolidated_db.obs_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), concept_id: int, value_numeric: double, voided: int}
+      rows: |
+        obs_id,person_id,mspp_code,concept_id,encounter_id,obs_datetime,value_numeric,uuid,voided
+        1,11,11106,5089,1,2026-01-02 09:05:00,72.5,uuid-o-1,0
+    consolidated_db.person_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), voided: int}
+      rows: |
+        person_id,mspp_code,uuid,voided
+        11,11106,uuid-p-11106-11,0
+    consolidated_db.encounter_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), voided: int}
+      rows: |
+        encounter_id,patient_id,mspp_code,uuid,voided
+        1,11,11106,uuid-e-1,0
+    consolidated_db.concept_name:
+      format: csv
+      columns: {concept_id: int, locale_preferred: int, voided: int}
+      rows: |
+        concept_name_id,concept_id,name,locale_preferred,concept_name_type,voided
+        1,5089,Weight (kg),1,FULLY_SPECIFIED,0
+  outputs:
+    query:
+      partial: true
+      rows:
+        - {mspp_code: '11106', obs_id: 1, fhir_id: uuid-o-1}

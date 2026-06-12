@@ -1,3 +1,0 @@
-encounter_id,encounter_type,patient_id,location_id,form_id,encounter_datetime,creator,date_created,voided,voided_by,date_voided,void_reason,changed_by,date_changed,visit_id,uuid,synced,synced_date,date_updated,mspp_code
-1,1,11,1,,2026-01-02 09:00:00,,,0,,,,,,,uuid-e-11106-1,,,,11106
-2,1,3,5,,2026-02-10 10:00:00,,,0,,,,,,,uuid-e-22207-2,,,,22207

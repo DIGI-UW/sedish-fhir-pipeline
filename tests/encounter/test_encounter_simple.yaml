@@ -1,0 +1,20 @@
+test_encounter_simple:
+  model: fhir.encounter
+  inputs:
+    consolidated_db.encounter_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), voided: int}
+      rows: |
+        encounter_id,patient_id,mspp_code,encounter_datetime,uuid,voided
+        1,11,11106,2026-01-02 09:00:00,uuid-e-1,0
+    consolidated_db.person_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), voided: int}
+      rows: |
+        person_id,mspp_code,uuid,voided
+        11,11106,uuid-p-11106-11,0
+  outputs:
+    query:
+      partial: true
+      rows:
+        - {mspp_code: '11106', encounter_id: 1, fhir_id: uuid-e-1}

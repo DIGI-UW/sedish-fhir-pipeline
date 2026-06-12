@@ -1,8 +1,8 @@
-db.db
-*.duckdb
-*.duckdb.wal
+config.yaml
 .cache/
+.venv/
 logs/
 .sqlmesh/
 __pycache__/
 *.pyc
+db.db

@@ -1,0 +1,30 @@
+# Copy to config.yaml and fill the connection details. config.yaml is git-ignored.
+# This project is designed to run on MySQL ONLY (source consolidated_db + the
+# FHIR JSON transforms use MySQL JSON functions). Tests also run on MySQL.
+gateways:
+  mysql:
+    connection:
+      type: mysql
+      host:
+      port: 3310
+      user:
+      password:
+      database: digi_fhir        # writable schema for SQLMesh outputs + state
+    test_connection:
+      type: mysql
+      host:
+      port: 3310
+      user:
+      password:
+      database: digi_fhir_test
+
+default_gateway: mysql
+
+model_defaults:
+  dialect: mysql
+
+# FHIR system URIs — must align with OpenCR config; provided by CHARESS.
+variables:
+  national_id_system: http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code
+
+disable_anonymized_analytics: true

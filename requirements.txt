@@ -1,3 +1,0 @@
-sqlmesh
-duckdb
-# production (read consolidated_db over MySQL): pip install "sqlmesh[mysql]"
