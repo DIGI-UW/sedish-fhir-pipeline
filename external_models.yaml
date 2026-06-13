@@ -121,6 +121,26 @@
     mspp_code: VARCHAR(10)
   gateway: mysql
 
+- name: '`consolidated_db`.`person_attribute_openmrs`'
+  columns:
+    person_attribute_id: INT
+    person_id: INT
+    value: VARCHAR(50)
+    person_attribute_type_id: INT
+    voided: INT
+    uuid: CHAR(38)
+    mspp_code: VARCHAR(10)
+  gateway: mysql
+
+- name: '`consolidated_db`.`person_attribute_type`'
+  columns:
+    person_attribute_type_id: INT
+    name: VARCHAR(50)
+    format: VARCHAR(50)
+    uuid: CHAR(38)
+    mspp_code: VARCHAR(10)
+  gateway: mysql
+
 - name: '`consolidated_db`.`patient_identifier_openmrs`'
   columns:
     patient_identifier_id: INT

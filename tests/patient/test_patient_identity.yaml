@@ -37,6 +37,18 @@ test_patient_identity:
       rows: |
         id,mspp_code,patient_id,national_id,statut
         1,11106,11,HT-00001830,UNIQUE
+    consolidated_db.person_attribute_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), person_attribute_type_id: int, voided: int}
+      rows: |
+        person_attribute_id,person_id,mspp_code,value,person_attribute_type_id,voided
+        1,11,11106,+509 3000 0000,8,0
+    consolidated_db.person_attribute_type:
+      format: csv
+      columns: {mspp_code: varchar(10), person_attribute_type_id: int}
+      rows: |
+        person_attribute_type_id,mspp_code,name
+        8,11106,Telephone Number
     ref.identifier_systems:
       format: csv
       rows: |

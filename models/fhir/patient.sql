@@ -81,6 +81,19 @@ idents AS (
 identifiers AS (
   SELECT mspp_code, patient_id, JSON_ARRAYAGG(ident) AS arr, MAX(chg) AS chg
   FROM idents GROUP BY mspp_code, patient_id
+),
+-- phone -> telecom, sourced like fhir2: the 'Telephone Number' person attribute.
+-- Feeds OpenCR's phone match rule (decisionRules: telecom.where(system='phone').value).
+phones AS (
+  SELECT pa.mspp_code, pa.person_id, MIN(pa.value) AS phone
+  FROM consolidated_db.person_attribute_openmrs pa
+  JOIN consolidated_db.person_attribute_type pat
+    ON pat.person_attribute_type_id = pa.person_attribute_type_id
+   AND pat.mspp_code = pa.mspp_code
+  WHERE COALESCE(pa.voided, 0) = 0
+    AND pat.name = @VAR('phone_attribute_name', 'Telephone Number')
+    AND pa.value IS NOT NULL AND pa.value <> ''
+  GROUP BY pa.mspp_code, pa.person_id
 )
 SELECT
   pt.mspp_code,
@@ -94,6 +107,7 @@ SELECT
     COALESCE(ids.chg, '1970-01-01 00:00:00')
   ) AS changed_at,
   JSON_MERGE_PATCH(
+   JSON_MERGE_PATCH(
     JSON_OBJECT(
       'resourceType', 'Patient',
       'id', per.uuid,
@@ -119,6 +133,12 @@ SELECT
         THEN JSON_OBJECT('deceasedBoolean', CAST('true' AS JSON))
       ELSE JSON_OBJECT('deceasedBoolean', CAST('false' AS JSON))
     END
+   ),
+   -- telecom (phone) only when present; absent attribute => no telecom (no breakage).
+   CASE WHEN ph.phone IS NOT NULL
+        THEN JSON_OBJECT('telecom', JSON_ARRAY(JSON_OBJECT(
+               'system', 'phone', 'value', ph.phone, 'use', 'mobile')))
+        ELSE JSON_OBJECT() END
   ) AS resource
 FROM consolidated_db.patient_openmrs pt
 JOIN consolidated_db.person_openmrs per
@@ -126,4 +146,5 @@ JOIN consolidated_db.person_openmrs per
 LEFT JOIN names nm ON nm.mspp_code = pt.mspp_code AND nm.person_id = pt.patient_id
 LEFT JOIN addresses ad ON ad.mspp_code = pt.mspp_code AND ad.person_id = pt.patient_id
 LEFT JOIN identifiers ids ON ids.mspp_code = pt.mspp_code AND ids.patient_id = pt.patient_id
+LEFT JOIN phones ph ON ph.mspp_code = pt.mspp_code AND ph.person_id = pt.patient_id
 WHERE COALESCE(pt.voided, 0) = 0

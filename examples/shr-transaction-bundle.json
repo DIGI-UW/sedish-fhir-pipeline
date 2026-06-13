@@ -53,6 +53,13 @@
             ]
           }
         ],
+        "telecom": [
+          {
+            "use": "mobile",
+            "value": "+509 3000 0000",
+            "system": "phone"
+          }
+        ],
         "birthDate": "1990-01-01",
         "identifier": [
           {
@@ -63,14 +70,6 @@
             },
             "value": "ST00160",
             "system": "http://isanteplus.org/openmrs/fhir2/3-isanteplus-id"
-          },
-          {
-            "use": "official",
-            "type": {
-              "text": "National FP ID"
-            },
-            "value": "HT-00001830",
-            "system": "http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code"
           },
           {
             "use": "official",
