@@ -180,7 +180,13 @@ class FakeCursor:
                             if fid in self.data["patients"]]
         elif "where changed_at" in s and "from fhir." in s:
             view = s.split("from fhir.", 1)[1].split()[0]   # patient / encounter / observation / …
-            self._result = self.data["delta"].get(view, [])
+            all_rows = self.data["delta"].get(view, [])
+            if "limit" in s and params and len(params) >= 3:
+                # delta_page(since, limit, offset) — slice to simulate pagination
+                limit, offset = int(params[1]), int(params[2])
+                self._result = all_rows[offset:offset + limit]
+            else:
+                self._result = all_rows
         elif "from fhir." in s and "where" not in s:        # global full read (push_globals)
             view = s.split("from fhir.", 1)[1].split()[0]
             self._result = self.data.get("globals", {}).get(view, [])

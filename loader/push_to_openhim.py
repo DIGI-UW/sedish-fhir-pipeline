@@ -45,6 +45,8 @@ DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
 # Phase 1 (default): push Patient identities to OpenCR only — no clinical, no SHR.
 MPI_ONLY = env("MPI_ONLY", "1") not in ("", "0", "false")
 EPOCH = "1970-01-01 00:00:00"
+# Phase 1 processes patients in pages to avoid OOM on the ~2.39M patient initial load.
+BATCH_SIZE = int(env("BATCH_SIZE", "500"))
 # patient-scoped clinical views to push (each carries fhir_id, patient_fhir_id, changed_at).
 # Add a resource = a SQLMesh model + an entry here.
 CLINICAL_VIEWS = [v.strip() for v in env("CLINICAL_VIEWS", "encounter,observation,allergy_intolerance,condition,medication_request").split(",") if v.strip()]
@@ -90,6 +92,15 @@ def advance(cur, rtype, ts):
 
 def delta(cur, view, cols, since):
     cur.execute(f"SELECT {cols}, changed_at FROM fhir.{view} WHERE changed_at > %s", (since,))
+    return cur.fetchall()
+
+def delta_page(cur, view, cols, since, limit, offset):
+    """One page of changed rows ordered deterministically for stable LIMIT/OFFSET pagination."""
+    cur.execute(
+        f"SELECT {cols}, changed_at FROM fhir.{view} "
+        f"WHERE changed_at > %s ORDER BY changed_at, fhir_id LIMIT %s OFFSET %s",
+        (since, limit, offset),
+    )
     return cur.fetchall()
 
 # --- pure helpers (no I/O; unit-tested in loader/tests) -------------------
@@ -144,23 +155,35 @@ def main():
         #      we are just the feeder. Clinical watermarks are left untouched so Phase 2
         #      backfills from the epoch when MPI_ONLY=0 is set. CR push gates the watermark.
         if MPI_ONLY:
-            pats = delta(cur, "patient", "fhir_id, resource", watermark(cur, "patient"))
-            patient_by_id = index_patients(pats)
-            ok = fail = 0
-            for pid in sorted(patient_by_id):
-                cr = send(f"{OPENCR_URL}/Patient/{pid}", "PUT", OPENCR, patient_by_id[pid])
-                good = cr in ("200", "201", "DRY_RUN")
-                ok, fail = ok + good, fail + (not good)
-                print(f"Patient/{pid}  CR={cr}")
+            wm = watermark(cur, "patient")
+            ok = fail = total = 0
+            max_changed = None
+            offset = 0
+            while True:
+                page = delta_page(cur, "patient", "fhir_id, resource", wm, BATCH_SIZE, offset)
+                if not page:
+                    break
+                patient_by_id = index_patients(page)
+                for pid in sorted(patient_by_id):
+                    cr = send(f"{OPENCR_URL}/Patient/{pid}", "PUT", OPENCR, patient_by_id[pid])
+                    good = cr in ("200", "201", "DRY_RUN")
+                    ok, fail = ok + good, fail + (not good)
+                    print(f"Patient/{pid}  CR={cr}")
+                batch_max = latest_changed(page)
+                if batch_max and (max_changed is None or batch_max > max_changed):
+                    max_changed = batch_max
+                total += len(page)
+                offset += BATCH_SIZE
+                if len(page) < BATCH_SIZE:
+                    break
             if not DRY_RUN:
                 if fail == 0:
-                    latest = latest_changed(pats)
-                    if latest is not None:
-                        advance(cur, "patient", latest)
+                    if max_changed is not None:
+                        advance(cur, "patient", max_changed)
                     conn.commit()
                 else:
                     print(f"  holding watermark: {fail} CR push(es) failed; delta retried next cycle")
-            print(f"DONE  patients={len(pats)} ok={ok} fail={fail}  [MPI-only]"
+            print(f"DONE  patients={total} ok={ok} fail={fail}  [MPI-only]"
                   f"{'  [DRY_RUN]' if DRY_RUN else ''}")
             return
 
