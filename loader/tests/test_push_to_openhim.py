@@ -196,11 +196,12 @@ class FakeConn:
     def commit(self): self.committed = True
 
 
-def _run_main(monkeypatch, data, dry_run=False, send_result="200"):
+def _run_main(monkeypatch, data, dry_run=False, send_result="200", mpi_only=False):
     sent = []
     cur = FakeCursor(data)
     conn = FakeConn(cur)
     monkeypatch.setattr(L, "DRY_RUN", dry_run)
+    monkeypatch.setattr(L, "MPI_ONLY", mpi_only)
     monkeypatch.setattr(L.pymysql, "connect", lambda **kw: conn)
     monkeypatch.setattr(L, "send", lambda url, method, cred, body, **kw:
                         sent.append((method, url, cred, body)) or
@@ -366,3 +367,56 @@ def test_main_dry_run_pushes_but_does_not_advance_or_commit(monkeypatch):
         ("PUT", f"{L.OPENCR_URL}/Patient/pA"), ("POST", L.SHR_URL)]   # still computes the pushes
     assert _advances(cur) == {}          # but never advances the watermark
     assert conn.committed is False       # and never commits
+
+
+# ======================================================================
+# Phase 1: MPI-only mode (MPI_ONLY=1) — Patient -> OpenCR only, no SHR/clinical
+# ======================================================================
+def test_mpi_only_pushes_patient_to_cr_only(monkeypatch):
+    # clinical deltas are present but MUST be ignored: only the CR PUT goes out.
+    data = {"watermark": {},
+            "patients": {},
+            "delta": {"patient": [("pA", _pat("pA"), DT1)],
+                      "encounter": [("e1", "pA", _enc("e1"), DT2)],
+                      "observation": [("o1", "pA", _obs("o1"), DT2)]}}
+    sent, conn, cur = _run_main(monkeypatch, data, mpi_only=True)
+    # exactly one outbound call: the identity PUT to OpenCR. No SHR POST, no globals.
+    assert [(m, u) for m, u, _, _ in sent] == [("PUT", f"{L.OPENCR_URL}/Patient/pA")]
+    assert sent[0][2] == ("openshr", "openshr")
+    assert sent[0][3] == {"resourceType": "Patient", "id": "pA"}
+    # only the patient watermark advances; clinical watermarks are left untouched for Phase 2.
+    assert _advances(cur) == {"patient": DT1}
+    assert conn.committed is True
+
+
+def test_mpi_only_does_not_query_clinical_views(monkeypatch):
+    data = {"watermark": {}, "patients": {}, "delta": {"patient": [("pA", _pat("pA"), DT1)]}}
+    _, _, cur = _run_main(monkeypatch, data, mpi_only=True)
+    delta_sqls = [s for s, _ in cur.executed if "where changed_at" in s.lower()]
+    assert len(delta_sqls) == 1                      # patient only — never the clinical views
+    assert "from fhir.patient" in delta_sqls[0].lower()
+
+
+def test_mpi_only_orders_patients_and_pushes_each(monkeypatch):
+    data = {"watermark": {},
+            "patients": {},
+            "delta": {"patient": [("pB", _pat("pB"), DT1), ("pA", _pat("pA"), DT2)]}}
+    sent, _, cur = _run_main(monkeypatch, data, mpi_only=True)
+    assert [u for m, u, _, _ in sent] == [
+        f"{L.OPENCR_URL}/Patient/pA", f"{L.OPENCR_URL}/Patient/pB"]   # sorted, all CR PUTs
+    assert _advances(cur) == {"patient": DT2}        # max changed_at across the batch
+
+
+def test_mpi_only_holds_watermark_on_cr_failure(monkeypatch):
+    data = {"watermark": {}, "patients": {}, "delta": {"patient": [("pA", _pat("pA"), DT1)]}}
+    sent, conn, cur = _run_main(monkeypatch, data, mpi_only=True, send_result="ERR 500: []")
+    assert sent                          # it attempted the CR PUT
+    assert _advances(cur) == {}          # but advanced nothing
+    assert conn.committed is False       # and did not commit (delta retried next cycle)
+
+
+def test_mpi_only_dry_run_pushes_but_does_not_advance(monkeypatch):
+    data = {"watermark": {}, "patients": {}, "delta": {"patient": [("pA", _pat("pA"), DT1)]}}
+    sent, conn, cur = _run_main(monkeypatch, data, mpi_only=True, dry_run=True)
+    assert [(m, u) for m, u, _, _ in sent] == [("PUT", f"{L.OPENCR_URL}/Patient/pA")]
+    assert _advances(cur) == {} and conn.committed is False

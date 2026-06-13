@@ -15,11 +15,17 @@ OpenCR de-dups identities; the SHR re-points clinical refs onto the golden recor
 Idempotent (PUT by uuid) — re-runs and overlaps converge. First run (watermark epoch)
 pushes everything, i.e. the initial load.
 
+PHASES. MPI_ONLY (default on) is Phase 1: push only Patient identities to OpenCR — no
+clinical, no SHR, no globals. The clinical models stay dormant in the repo and their
+watermarks are left untouched, so Phase 2 (MPI_ONLY=0) backfills them from the epoch
+when it's switched on. Set MPI_ONLY=0 to run the full identity + clinical pipeline.
+
 Env (defaults = stock SEDISH swarm):
   FHIR_DB_HOST/PORT/USER/PASS/NAME    where SQLMesh wrote the fhir.* views (NAME=fhir)
   STATE_DB                            isolated db for the watermark table (default loader_state)
+  MPI_ONLY=1                          Phase 1: Patient->OpenCR only (default). 0 = full pipeline.
   OPENCR_URL/OPENCR_USER/OPENCR_PASS  CR channel on OpenHIM
-  SHR_URL/SHR_USER/SHR_PASS           SHR channel on OpenHIM
+  SHR_URL/SHR_USER/SHR_PASS           SHR channel on OpenHIM  (Phase 2 only)
   DRY_RUN=1                           preview; don't POST and don't advance the watermark
 """
 import os, json, base64, time, collections, urllib.request, urllib.error
@@ -36,6 +42,8 @@ SHR_URL    = env("SHR_URL",    "http://openhim-core:5001/SHR/fhir").rstrip("/")
 OPENCR = (env("OPENCR_USER", "openshr"),      env("OPENCR_PASS", "openshr"))
 SHR    = (env("SHR_USER",    "shr-pipeline"), env("SHR_PASS",    "instant101"))
 DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
+# Phase 1 (default): push Patient identities to OpenCR only — no clinical, no SHR.
+MPI_ONLY = env("MPI_ONLY", "1") not in ("", "0", "false")
 EPOCH = "1970-01-01 00:00:00"
 # patient-scoped clinical views to push (each carries fhir_id, patient_fhir_id, changed_at).
 # Add a resource = a SQLMesh model + an entry here.
@@ -130,6 +138,33 @@ def main():
     conn = pymysql.connect(**FHIR_DB, autocommit=False)
     with conn.cursor() as cur:
         ensure_state(cur)
+
+        # ---- Phase 1 (default): MPI-only. Push Patient identities to OpenCR; no clinical,
+        #      no SHR, no globals. OpenCR alone does the matching/de-dup (decisionRules.json) —
+        #      we are just the feeder. Clinical watermarks are left untouched so Phase 2
+        #      backfills from the epoch when MPI_ONLY=0 is set. CR push gates the watermark.
+        if MPI_ONLY:
+            pats = delta(cur, "patient", "fhir_id, resource", watermark(cur, "patient"))
+            patient_by_id = index_patients(pats)
+            ok = fail = 0
+            for pid in sorted(patient_by_id):
+                cr = send(f"{OPENCR_URL}/Patient/{pid}", "PUT", OPENCR, patient_by_id[pid])
+                good = cr in ("200", "201", "DRY_RUN")
+                ok, fail = ok + good, fail + (not good)
+                print(f"Patient/{pid}  CR={cr}")
+            if not DRY_RUN:
+                if fail == 0:
+                    latest = latest_changed(pats)
+                    if latest is not None:
+                        advance(cur, "patient", latest)
+                    conn.commit()
+                else:
+                    print(f"  holding watermark: {fail} CR push(es) failed; delta retried next cycle")
+            print(f"DONE  patients={len(pats)} ok={ok} fail={fail}  [MPI-only]"
+                  f"{'  [DRY_RUN]' if DRY_RUN else ''}")
+            return
+
+        # ---- Phase 2: identity + clinical (dormant; set MPI_ONLY=0 to enable) ----
         wm = {r: watermark(cur, r) for r in ["patient", *CLINICAL_VIEWS]}
 
         pats = delta(cur, "patient", "fhir_id, resource", wm["patient"])
