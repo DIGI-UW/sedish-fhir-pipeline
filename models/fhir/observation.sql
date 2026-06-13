@@ -38,7 +38,12 @@ SELECT
         'effectiveDateTime', REPLACE(CAST(o.obs_datetime AS CHAR),' ','T')
       ),
       CASE
-        WHEN o.value_numeric  IS NOT NULL THEN JSON_OBJECT('valueQuantity', JSON_OBJECT('value', o.value_numeric))
+        WHEN o.value_numeric  IS NOT NULL THEN JSON_OBJECT('valueQuantity',
+                                               JSON_MERGE_PATCH(
+                                                 JSON_OBJECT('value', o.value_numeric),
+                                                 CASE WHEN o.value_modifier IS NOT NULL
+                                                      THEN JSON_OBJECT('comparator', o.value_modifier)
+                                                      ELSE JSON_OBJECT() END))
         WHEN o.value_coded    IS NOT NULL THEN JSON_OBJECT('valueCodeableConcept',
                                                JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
                                                  'code', COALESCE(vc.uuid, RPAD(CAST(o.value_coded AS CHAR), 36, 'A'))))))
