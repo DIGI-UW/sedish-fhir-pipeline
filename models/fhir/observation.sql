@@ -49,6 +49,10 @@ SELECT
                                                  'code', COALESCE(vc.uuid, RPAD(CAST(o.value_coded AS CHAR), 36, 'A'))))))
         WHEN o.value_datetime IS NOT NULL THEN JSON_OBJECT('valueDateTime', REPLACE(CAST(o.value_datetime AS CHAR),' ','T'))
         WHEN o.value_text     IS NOT NULL THEN JSON_OBJECT('valueString', o.value_text)
+        WHEN o.value_drug     IS NOT NULL THEN JSON_OBJECT('valueCodeableConcept',
+                                               JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
+                                                 'system', 'http://openmrs.org/drugs',
+                                                 'code',   CAST(o.value_drug AS CHAR)))))
         ELSE JSON_OBJECT()
       END
     ),
