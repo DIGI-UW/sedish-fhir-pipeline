@@ -1,5 +1,5 @@
 {
-  "id": "uuid-e-11106-1",
+  "id": "0377ce69-88c2-47f3-9be4-56964f5bb59a",
   "meta": {
     "tag": [
       {
@@ -22,7 +22,7 @@
   },
   "status": "finished",
   "subject": {
-    "reference": "Patient/uuid-p-11106-11"
+    "reference": "Patient/fe5cae86-52a1-4713-b39d-4c05a9da3abf"
   },
   "resourceType": "Encounter"
 }

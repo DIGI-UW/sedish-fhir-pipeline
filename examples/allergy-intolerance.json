@@ -1,5 +1,5 @@
 {
-  "id": "uuid-al-1",
+  "id": "5105139e-966c-40a2-a61c-c1e79f326bda",
   "code": {
     "text": "Penicillin",
     "coding": [
@@ -25,7 +25,7 @@
   "type": "allergy",
   "patient": {
     "type": "Patient",
-    "reference": "Patient/uuid-p-11106-11"
+    "reference": "Patient/fe5cae86-52a1-4713-b39d-4c05a9da3abf"
   },
   "category": [
     "medication"

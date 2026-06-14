@@ -14,7 +14,7 @@ test_patient_with_national_id:
       columns: {mspp_code: varchar(10), gender: varchar(50), birthdate: date, dead: int, voided: int}
       rows: |
         person_id,mspp_code,gender,birthdate,dead,uuid,voided
-        11,11106,M,1990-01-01,0,uuid-p-11106-11,0
+        11,11106,M,1990-01-01,0,fe5cae86-52a1-4713-b39d-4c05a9da3abf,0
     consolidated_db.person_name_openmrs:
       format: csv
       columns: {mspp_code: varchar(10), preferred: int, voided: int}
@@ -60,7 +60,7 @@ test_patient_with_national_id:
     query:
       partial: true
       rows:
-        - {mspp_code: '11106', patient_id: 11, fhir_id: uuid-p-11106-11}
+        - {mspp_code: '11106', patient_id: 11, fhir_id: fe5cae86-52a1-4713-b39d-4c05a9da3abf}
 
 # A_REVOIR status: patient is loaded but receives no national FP ID.
 # fp_chg CTE still picks up the mapping row (any statut), advancing changed_at.
@@ -80,7 +80,7 @@ test_patient_arevoir_no_national_id:
       columns: {mspp_code: varchar(10), gender: varchar(50), birthdate: date, dead: int, voided: int}
       rows: |
         person_id,mspp_code,gender,birthdate,dead,uuid,voided
-        99,11202,F,1985-03-15,0,uuid-p-11202-99,0
+        99,11202,F,1985-03-15,0,a11b78bc-e15d-4fcd-a99d-4139455ff330,0
     consolidated_db.person_name_openmrs:
       format: csv
       columns: {mspp_code: varchar(10), preferred: int, voided: int}
@@ -129,5 +129,5 @@ test_patient_arevoir_no_national_id:
         # changed_at driven by fp_chg.chg = 2026-03-01 (the mapping's updated_at).
         - mspp_code: '11202'
           patient_id: 99
-          fhir_id: uuid-p-11202-99
+          fhir_id: a11b78bc-e15d-4fcd-a99d-4139455ff330
           changed_at: '2026-03-01 00:00:00'

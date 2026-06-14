@@ -1,5 +1,5 @@
 {
-  "id": "uuid-p-11106-11",
+  "id": "fe5cae86-52a1-4713-b39d-4c05a9da3abf",
   "meta": {
     "tag": [
       {
@@ -10,7 +10,7 @@
   },
   "name": [
     {
-      "id": "uuid-n-11",
+      "id": "969ee6b1-e68b-479c-95b9-62380f0ff5ed",
       "use": "official",
       "given": [
         "Jean"
@@ -22,7 +22,7 @@
   "gender": "male",
   "address": [
     {
-      "id": "uuid-a-11",
+      "id": "281dec97-01f6-4bf4-9807-a74a4f73ed54",
       "use": "home",
       "city": "Dessalines",
       "state": "Artibonite",
@@ -58,7 +58,7 @@
   "birthDate": "1990-01-01",
   "identifier": [
     {
-      "id": "uuid-i-11",
+      "id": "95dfc8dc-5944-45b8-9fa3-730ea68452cd",
       "use": "official",
       "type": {
         "text": "iSantePlus ID"

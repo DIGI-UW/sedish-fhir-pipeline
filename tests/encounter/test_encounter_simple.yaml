@@ -6,15 +6,15 @@ test_encounter_simple:
       columns: {mspp_code: varchar(10), voided: int}
       rows: |
         encounter_id,patient_id,mspp_code,encounter_datetime,uuid,voided
-        1,11,11106,2026-01-02 09:00:00,uuid-e-1,0
+        1,11,11106,2026-01-02 09:00:00,2650d51a-31b4-451b-a5fb-eb6e1a8c7a07,0
     consolidated_db.person_openmrs:
       format: csv
       columns: {mspp_code: varchar(10), voided: int}
       rows: |
         person_id,mspp_code,uuid,voided
-        11,11106,uuid-p-11106-11,0
+        11,11106,fe5cae86-52a1-4713-b39d-4c05a9da3abf,0
   outputs:
     query:
       partial: true
       rows:
-        - {mspp_code: '11106', encounter_id: 1, fhir_id: uuid-e-1}
+        - {mspp_code: '11106', encounter_id: 1, fhir_id: 2650d51a-31b4-451b-a5fb-eb6e1a8c7a07}

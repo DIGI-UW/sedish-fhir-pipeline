@@ -19,7 +19,7 @@
   },
   "subject": {
     "type": "Patient",
-    "reference": "Patient/uuid-p-11106-11"
+    "reference": "Patient/fe5cae86-52a1-4713-b39d-4c05a9da3abf"
   },
   "category": [
     {
@@ -33,7 +33,7 @@
     }
   ],
   "encounter": {
-    "reference": "Encounter/uuid-e-11106-1"
+    "reference": "Encounter/0377ce69-88c2-47f3-9be4-56964f5bb59a"
   },
   "recordedDate": "2026-01-02T09:00:00",
   "resourceType": "Condition",
