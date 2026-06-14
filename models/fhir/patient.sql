@@ -82,6 +82,15 @@ identifiers AS (
   SELECT mspp_code, patient_id, JSON_ARRAYAGG(ident) AS arr, MAX(chg) AS chg
   FROM idents GROUP BY mspp_code, patient_id
 ),
+-- all fingerprint mapping changes, regardless of statut — so a status downgrade
+-- (UNIQUE → A_REVOIR) advances changed_at and triggers a re-sync to OpenCR even
+-- though the identifier is no longer emitted (idents filters UNIQUE/DOUBLON only).
+fp_chg AS (
+  SELECT mspp_code, patient_id,
+         MAX(COALESCE(updated_at, created_at)) AS chg
+  FROM consolidated_db.national_fingerprint_mapping
+  GROUP BY mspp_code, patient_id
+),
 -- phone -> telecom, sourced like fhir2: the 'Telephone Number' person attribute.
 -- Feeds OpenCR's phone match rule (decisionRules: telecom.where(system='phone').value).
 phones AS (
@@ -102,9 +111,10 @@ SELECT
   GREATEST(
     COALESCE(per.date_updated, per.date_created, '1970-01-01 00:00:00'),
     COALESCE(pt.date_updated,  pt.date_created,  '1970-01-01 00:00:00'),
-    COALESCE(nm.chg,  '1970-01-01 00:00:00'),
-    COALESCE(ad.chg,  '1970-01-01 00:00:00'),
-    COALESCE(ids.chg, '1970-01-01 00:00:00')
+    COALESCE(nm.chg,   '1970-01-01 00:00:00'),
+    COALESCE(ad.chg,   '1970-01-01 00:00:00'),
+    COALESCE(ids.chg,  '1970-01-01 00:00:00'),
+    COALESCE(fp.chg,   '1970-01-01 00:00:00')
   ) AS changed_at,
   JSON_MERGE_PATCH(
    JSON_MERGE_PATCH(
@@ -146,5 +156,6 @@ JOIN consolidated_db.person_openmrs per
 LEFT JOIN names nm ON nm.mspp_code = pt.mspp_code AND nm.person_id = pt.patient_id
 LEFT JOIN addresses ad ON ad.mspp_code = pt.mspp_code AND ad.person_id = pt.patient_id
 LEFT JOIN identifiers ids ON ids.mspp_code = pt.mspp_code AND ids.patient_id = pt.patient_id
-LEFT JOIN phones ph ON ph.mspp_code = pt.mspp_code AND ph.person_id = pt.patient_id
+LEFT JOIN fp_chg fp  ON fp.mspp_code  = pt.mspp_code AND fp.patient_id  = pt.patient_id
+LEFT JOIN phones ph  ON ph.mspp_code  = pt.mspp_code AND ph.person_id   = pt.patient_id
 WHERE COALESCE(pt.voided, 0) = 0
