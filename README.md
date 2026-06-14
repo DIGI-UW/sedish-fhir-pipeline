@@ -140,11 +140,6 @@ service of the SEDISH **`hie`** stack, alongside the consolidated server + Kafka
 **Why re-running is safe.** Both stages are **idempotent**: SQLMesh merges by uuid, and the
 loader **PUTs by uuid** (OpenCR de-dups identities; the SHR re-points clinical refs). Overlaps
 and retries converge — never a duplicate patient or encounter.
-A cycle that overlaps or retries converges — it never double-creates a patient or an encounter.
-
-> Today the models are still `FULL` (correct, but re-reads everything each cycle — fine for
-> low volume, too heavy for production). The one change needed to make continuous operation
-> *scale* is the move to `INCREMENTAL_BY_*` above; the loop and the loader already support it.
 
 ### Verified end-to-end behaviour
 Against a SEDISH stack (two+ sites in `consolidated_db`): two source patients at different

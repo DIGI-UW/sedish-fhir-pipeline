@@ -371,17 +371,29 @@
     patient_id: INT
     visit_id: INT
     location_id: INT
+    obs_id: INT
+    obs_group_id: INT
+    visit_date: DATETIME
     encounter_id: INT
     provider_id: INT
     drug_id: INT
-    visit_date: DATETIME
     dispensation_date: DATE
-    posology: TEXT
-    number_day: DOUBLE
+    next_dispensation_date: DATE
+    dispensation_location: INT
     arv_drug: INT
+    dispense: INT
+    rx_or_prophy: INT
+    posology: TEXT
+    posology_alt: TEXT
+    posology_alt_disp: TEXT
+    number_day: DOUBLE
+    number_day_dispense: DOUBLE
+    pills_amount_dispense: DOUBLE
+    last_updated_date: DATETIME
     voided: INT
     date_updated: DATETIME
-    last_updated_date: DATETIME
+    synced: INT
+    synced_date: DATETIME
     mspp_code: VARCHAR(10)
   gateway: mysql
 
@@ -391,6 +403,7 @@
     location_id: INT
     name: VARCHAR(100)
     value_reference: VARCHAR(10)
+    address3: VARCHAR(100)
     city_village: VARCHAR(100)
     state_province: VARCHAR(100)
     active: INT
