@@ -1,183 +1,319 @@
-# consolidated-fhir-mapper
+# sedish-fhir-pipeline
 
-Maps the **CHARESS consolidated OpenMRS database → FHIR R4** with **SQLMesh**, and
-loads it into SEDISH's **OpenCR (MPI)** and **SHR**. In the Roaming Care architecture
-this repo is the **"Script Py"** between the *Consolidé* server and *SEDISH* — it turns
-consolidated medical data into FHIR and pushes it through OpenHIM.
+FHIR R4 transformation and load pipeline for the **SEDISH Haiti Health Information Exchange**.
+Reads patient demographics and clinical data from the CHARESS consolidated OpenMRS database,
+maps it to FHIR R4 using [SQLMesh](https://sqlmesh.com), and delivers it to **OpenCR** (MPI)
+and the **Shared Health Record** (SHR) through OpenHIM — continuously, in near-real time.
 
-This is a **continuous** pipeline, not a one-time/batch job. A patient created at any site
-reaches the consolidated server (CDC), and from that moment must flow into OpenCR + SHR on
-its own — so the transform + load run on a loop (or off CDC events) in near-real-time. See
-[Continuous operation](#continuous-operation-not-a-one-time-run).
+---
 
-## Where it fits
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Running the Pipeline](#running-the-pipeline)
+- [Continuous Operation](#continuous-operation)
+- [Deployment](#deployment)
+- [Mapping Reference](#mapping-reference)
+- [Testing](#testing)
+- [Project Structure](#project-structure)
+- [Known Limitations](#known-limitations)
+
+---
+
+## Overview
+
+SEDISH is Haiti's national Health Information Exchange. Multiple iSantePlus EMR sites
+(HUEH, HUP, HFSCJ, and others) each maintain their own OpenMRS instance. The CHARESS
+*Consolidé* server aggregates all site data into a single `consolidated_db` via MySQL
+binlog CDC. This pipeline sits between the Consolidé server and SEDISH:
+
+1. **Transform** — SQLMesh models read `consolidated_db` and emit FHIR R4 JSON for each
+   patient and their clinical record.
+2. **Load** — a Python loader pushes changed records through OpenHIM to two destinations:
+   - **OpenCR** receives patient identity (demographics, per-site MRNs, national fingerprint
+     ID) and performs cross-site deduplication into golden records.
+   - **SHR** (HAPI FHIR) receives the clinical record (Encounters, Observations, Conditions,
+     Allergies, Medications) linked to the same patient.
+
+This repo covers the *transform* and *load* steps only. The *extract* — replicating site
+data into `consolidated_db` — is the Consolidé server's responsibility.
+
+---
+
+## Architecture
 
 ![SEDISH / Roaming Care architecture](docs/architecture.png)
 
-Reading the whiteboard left-to-right:
-
-- **Sites iSantePlus (HUEH, HUP, HFSCJ, …)** — the EMRs at each facility. Every site is
-  identified by its **`mspp_code`**.
-- **Consolidé** — the consolidated server. It continuously ingests each site's OpenMRS
-  data (CDC over the MySQL binlog) into one **`consolidated_db`** (*Consolidated Medical
-  Data*), and holds biometric fingerprints (*Consolidated Fingerprint*).
-- **This repo (the ETL / "Script Py")** — reads `consolidated_db`, maps it to FHIR, and
-  delivers it to SEDISH over OpenHIM:
-  - **Identity → OpenCR (MPI):** Patients, with their per-site MRNs and the national
-    fingerprint id. **OpenCR does the de-duplication / cross-site linking**, not us.
-  - **Clinical → SHR:** Encounters + Observations as a transaction Bundle.
-- **SEDISH** — **OpenHIM** is the front door (channels `/CR/fhir` and `/SHR/fhir`);
-  **OpenCR** is the client registry / MPI; **SHR** is the shared health record (HAPI FHIR).
-
 ```
- Site 1 ┐
- Site 2 ┤── CDC ──▶  Consolidé: consolidated_db ──▶  [ consolidated-fhir-mapper ]
- Site N ┘            (OpenMRS-shaped, multi-site)        │ 1. transform (SQLMesh)
-                                                         │     consolidated_db → fhir.patient/encounter/observation
-                                                         │ 2. load (loader/)
-                                                         ▼
-                                              OpenHIM ──┬─▶ /CR/fhir  → OpenCR (identity, dedup, golden records)
-                                                        └─▶ /SHR/fhir → SHR → HAPI FHIR (clinical)
+ Site 1 (iSantePlus) ┐
+ Site 2 (iSantePlus) ┤── binlog CDC ──▶  Consolidé: consolidated_db
+ Site N (iSantePlus) ┘                   (OpenMRS-shaped, multi-site)
+                                                    │
+                                     ┌──────────────┘
+                                     │  sedish-fhir-pipeline
+                                     │  ① SQLMesh models
+                                     │     consolidated_db → fhir.*
+                                     │  ② loader/push_to_openhim.py
+                                     └──────────────────────────────▶ OpenHIM
+                                                                          │
+                                                      ┌───────────────────┴────────────────────┐
+                                                      ▼                                        ▼
+                                             /CR/fhir → OpenCR                    /SHR/fhir → SHR
+                                             (MPI: identity, dedup,               (HAPI FHIR: clinical)
+                                              golden records)
 ```
 
-### What's in this repo, and what isn't
-- **In scope:** the *transform* (SQLMesh models → FHIR) and the *load* (`loader/`).
-- **Out of scope:** the *extract* — getting site data into `consolidated_db` is the
-  Consolidé server's job (binlog CDC). This repo treats `consolidated_db` as a read-only source.
+### Why an MPI is necessary
 
-## Why a single multi-site DB needs an MPI
+Each iSantePlus site assigns its own patient IDs, so the same person appears under different
+MRNs at different facilities. This pipeline does not attempt cross-site resolution; instead,
+it attaches every available identifier — per-site MRNs and the national biometric fingerprint
+ID — to the FHIR Patient resource and lets OpenCR perform deduplication.
 
-Each site keeps its own patient ids, so the same person appears under different MRNs at
-different facilities. We don't try to resolve that here — we attach every identifier we
-have (per-site MRN + national fingerprint id) and let **OpenCR** decide. The national
-fingerprint id (`HT-…`, statut `UNIQUE`/`DOUBLON`) is the strong cross-site key: a
-`DOUBLON` reuses the canonical id, so the same person at two facilities collapses to **one
-golden record** in OpenCR, and the SHR re-points all their clinical data onto it.
+The national fingerprint ID (`HT-…`) is the authoritative cross-site key. Records with
+`statut = UNIQUE` carry a unique fingerprint; records with `statut = DOUBLON` share the
+canonical ID of another site's record for the same person. OpenCR collapses both into a
+single golden record, and the SHR re-points all clinical references onto it.
 
-## Use it in a SEDISH setup
+---
 
-**Prerequisites**
-- Network reach to the Consolidé `consolidated_db` (read-only) **and** to OpenHIM (`:5001`).
-- A **writable** MySQL/schema for SQLMesh to materialize outputs + state into.
-- OpenHIM channels `/CR/fhir` (→ OpenCR) and `/SHR/fhir` (→ SHR) configured, with client creds.
+## Prerequisites
 
-**1. Configure**
+| Requirement | Notes |
+|---|---|
+| Python ≥ 3.11 | `uv` recommended for dependency management |
+| MySQL ≥ 8.0 | Read access to `consolidated_db`; a writable schema for SQLMesh state |
+| OpenHIM | Channels `/CR/fhir` and `/SHR/fhir` configured with client credentials |
+| SQLMesh | Installed via `uv sync` or `pip install -e .` |
+
+Network access to the Consolidé server's `consolidated_db` and to OpenHIM (default port
+`5001`) is required for both the transform and load stages.
+
+---
+
+## Installation
+
 ```bash
-cp config.template.yaml config.yaml      # git-ignored; fill in connection + creds
-uv sync                                  # or: pip install -e .
-```
-- `connection` → the Consolidé `consolidated_db` (read) + your writable output db (`digi_fhir`).
-- `variables.national_id_system` → the FHIR system URI OpenCR expects for the fingerprint id.
-
-**2. Transform — build the FHIR**
-```bash
-sqlmesh plan --auto-apply     # materializes fhir.patient / fhir.encounter / fhir.observation
-sqlmesh test                  # unit tests (against test_connection)
+git clone https://github.com/uwdigi/sedish-fhir-pipeline.git
+cd sedish-fhir-pipeline
+uv sync          # or: pip install -e .
 ```
 
-**3. Load — push to OpenCR + SHR through OpenHIM**
-```bash
-# points at the fhir.* views from step 2 and the OpenHIM channels (env-configurable)
-FHIR_DB_HOST=<output-mysql> OPENCR_URL=http://openhim-core:5001/CR/fhir \
-SHR_URL=http://openhim-core:5001/SHR/fhir \
-python loader/push_to_openhim.py          # add DRY_RUN=1 to preview without writing
-```
-The loader is **idempotent** (PUT by uuid) so it's safe to re-run. Defaults match a stock
-SEDISH swarm (`openhim-core:5001`, clients `openshr` / `shr-pipeline`); override via env.
+---
 
-**4. Run it continuously** (the production mode — see below)
+## Configuration
+
+Copy the configuration template and fill in your connection details and credentials:
+
 ```bash
-INTERVAL=30 bash loader/run_continuous.sh    # loop: sqlmesh run → load → sleep
+cp config.template.yaml config.yaml
 ```
 
-**5. Verify**
+`config.yaml` is git-ignored. Key sections to configure:
+
+```yaml
+gateways:
+  default:
+    connection:
+      host: <consolidated-db-host>      # Consolidé server (read-only)
+      database: consolidated_db
+      ...
+  output:
+    connection:
+      host: <output-db-host>            # writable schema for SQLMesh materialisation
+      database: digi_fhir
+      ...
+
+variables:
+  national_id_system: <uri>             # FHIR system URI OpenCR expects for the fingerprint ID
+                                        # e.g. http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code
+```
+
+Environment variables accepted by the loader (all optional; defaults target a stock SEDISH
+swarm):
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENCR_URL` | `http://openhim-core:5001/CR/fhir` | OpenHIM channel for OpenCR |
+| `SHR_URL` | `http://openhim-core:5001/SHR/fhir` | OpenHIM channel for the SHR |
+| `FHIR_DB_HOST` | `localhost` | Host of the SQLMesh output database |
+| `MPI_ONLY` | `1` | `1` = Phase 1 (identity to OpenCR only); `0` = Phase 2 (identity + clinical) |
+| `DRY_RUN` | `0` | `1` = preview changes without writing to OpenHIM |
+| `INTERVAL` | `30` | Poll interval in seconds (continuous mode) |
+
+---
+
+## Running the Pipeline
+
+### Step 1 — Transform: build the FHIR views
+
 ```bash
-# identity: the two facilities' records for one person share ONE golden record
-curl -su openshr:openshr 'http://openhim-core:5001/CR/fhir/Patient?identifier=<national-id>'
-# clinical: the encounters/observations landed (SHR normalizes subject → golden record)
+sqlmesh plan --auto-apply
+```
+
+This materialises `fhir.patient`, `fhir.encounter`, `fhir.observation`, `fhir.condition`,
+`fhir.allergy_intolerance`, `fhir.medication_request`, and `fhir.location` into the output
+database. On subsequent runs, only rows whose `changed_at` watermark has advanced are
+reprocessed.
+
+### Step 2 — Load: push to OpenCR and SHR
+
+```bash
+python loader/push_to_openhim.py
+```
+
+The loader reads the `fhir.*` views, compares each row's `changed_at` against a per-resource
+high-water mark stored in `loader_state`, and issues `PUT` requests to OpenHIM for any record
+that has changed since the last run. Both stages are **idempotent** — re-running is always
+safe.
+
+```bash
+# Preview changes without writing (recommended on first run)
+DRY_RUN=1 python loader/push_to_openhim.py
+```
+
+### Step 3 — Verify
+
+```bash
+# Confirm two site records share one golden record in OpenCR
+curl -su openshr:openshr \
+  'http://openhim-core:5001/CR/fhir/Patient?identifier=<national-id>'
+
+# Confirm clinical resources landed in the SHR
 curl -s 'http://hapi-fhir:8080/fhir/Encounter/<uuid>'
 ```
 
-## Continuous operation (not a one-time run)
+---
 
-The pipeline is **always on**: the instant a new/updated patient lands in
-`consolidated_db`, it propagates to OpenCR + SHR. Two layers make that work, both implemented:
+## Continuous Operation
 
-1. **Incremental models.** The `fhir.*` models are `INCREMENTAL_BY_UNIQUE_KEY (unique_key
-   fhir_id)` with `allow_partials true` and `cron '*/5 * * * *'`. They **merge by uuid**
-   (an updated record upserts in place — no stale duplicates), and each carries a
-   **`changed_at`** column = the latest `date_updated` from its source tables (the moment
-   the consolidated server wrote the row). `date_updated` is the right watermark:
-   `date_changed` is NULL on never-edited rows (misses new patients), `date_created` misses
-   updates.
-2. **A delta loader on a loop.** `loader/run_continuous.sh` loops *`sqlmesh run` → load →
-   sleep `INTERVAL`*. The loader keeps a per-resource high-water mark (in an isolated
-   `loader_state` table) and pushes **only rows with `changed_at` > last mark** — patients
-   that changed, plus patients with any changed encounter/observation (their `changed_at`
-   advances; the loader fetches the current Patient and bundles only the changed clinical).
+The pipeline is designed to run indefinitely. A new or updated record in `consolidated_db`
+propagates to OpenCR and the SHR within one cycle — typically within five minutes.
 
-```
-consolidated_db (changed rows)  ──sqlmesh run──▶  fhir.* (merged by uuid)  ──loader (Δ only)──▶  OpenCR + SHR
-        ▲ CDC from sites                  └──────────────────── every cycle, forever ───────────────────┘
+Two runtime drivers are available:
+
+### Kafka (default, event-driven)
+
+```bash
+RUN_MODE=kafka python loader/run_kafka.py
 ```
 
-**Two drivers** (pick with `RUN_MODE` on the Docker image, default `kafka`):
-- **`loader/run_kafka.py` (event-driven, default).** Consumes the consolidated server's
-  existing `fhir.patient.changed` Kafka topic, debounces a burst, and runs one cycle
-  (`sqlmesh run` → loader). No idle work; events buffer/replay in Kafka if OpenHIM is down.
-  The payload is ignored — events are a *trigger*; correctness is the incremental models +
-  the loader watermark, so a missed/duplicate event only causes a redundant idempotent cycle.
-- **`loader/run_continuous.sh` (poll).** The no-Kafka fallback: `sqlmesh run` → load →
-  sleep `INTERVAL`.
+Consumes the Consolidé server's `fhir.patient.changed` Kafka topic. Each event debounces a
+burst and triggers one `sqlmesh run` → load cycle. The event payload is intentionally ignored
+— events are a trigger only; correctness is guaranteed by the incremental models and the
+loader watermark. A missed or duplicate event results in at most one redundant idempotent
+cycle. Events replay from Kafka if OpenHIM is temporarily unavailable.
 
-**Latency** ≈ 5 min — SQLMesh's minimum `cron` — regardless of driver; Kafka mainly buys
-idle-efficiency + buffering, not sub-cron latency.
+### Poll (fallback)
 
-**Deploy:** the `Dockerfile` builds the pipeline image (renders `config.yaml` from env,
-applies the initial `sqlmesh plan`, then serves `RUN_MODE`). It runs as the `fhir-pipeline`
-service of the SEDISH **`hie`** stack, alongside the consolidated server + Kafka.
-
-**Why re-running is safe.** Both stages are **idempotent**: SQLMesh merges by uuid, and the
-loader **PUTs by uuid** (OpenCR de-dups identities; the SHR re-points clinical refs). Overlaps
-and retries converge — never a duplicate patient or encounter.
-
-### Verified end-to-end behaviour
-Against a SEDISH stack (two+ sites in `consolidated_db`): two source patients at different
-facilities sharing one national fingerprint id collapsed to a **single OpenCR golden
-record**, a patient with no fingerprint id stayed **separate**, and **all** their
-Encounters/Observations persisted in HAPI with `subject` re-pointed onto the golden record
-— i.e. one unified cross-facility record, which is the point of the HIE.
-
-## Mapping rules encoded (per the CHARESS spec)
-- Composite key **`(mspp_code, patient_id)`**; `person_id = patient_id`; `voided` filtered; `preferred=1` first.
-- Resource id = OpenMRS `uuid`; `gender` accepts code or label (`M`/`Male`→`male`).
-- Per-site MRNs → `Patient.identifier` via `ref.identifier_systems` (systems must match OpenCR's `internalid`).
-- `national_id` attached only for `statut ∈ {UNIQUE, DOUBLON}`; **DOUBLON reuses the shared id**.
-- `obs` → `Observation` (`value[x]` by type, `concept_name` label); dateTimes T-separated.
-
-See **[`examples/`](examples/)** for real FHIR output the models emit (Patient with/without a
-national id, Encounter, Observation, and the SHR transaction Bundle the loader sends).
-
-## Layout
-```
-config.template.yaml   gateways (mysql connection + test_connection), FHIR-system variables
-external_models.yaml   typed schemas of the consolidated_db source tables (read live)
-models/fhir/           the mapping: patient.sql, encounter.sql, observation.sql  (→ FHIR JSON)
-models/ref_*           reference mappings (identifier_type → FHIR system), SEED
-loader/                push_to_openhim.py (delta load → OpenCR /CR + SHR /SHR), run_continuous.sh (loop)
-audits/                data assertions (e.g. every Patient has an identifier)
-tests/<domain>/        SQLMesh unit tests by domain (patient / encounter / observation)
-documentation/domains/ per-resource mapping notes
-examples/              real FHIR output the models emit (patient/encounter/observation + SHR bundle)
-docs/architecture.png  the Roaming Care / SEDISH architecture
-schema/                the real consolidated_db DDL dump (authoritative source reference)
+```bash
+INTERVAL=30 bash loader/run_continuous.sh
 ```
 
-## Status & open items
-Transform + load verified end-to-end on MySQL against the real schema. Pending — all
-gated on data CHARESS still owes, not on the pipeline:
-- **`national_fingerprint_mapping` not in the dump** — identity/DOUBLON core wired + tested via fixtures, inert until delivered.
-- **No `concept_reference_*`** → Observations use `concept_name` labels + local code (no CIEL codings yet).
-- **Dimension tables data-less** (`patient_identifier_type`, `encounter_type`, `site`, visit-type) — need the rows to finalize identifier systems / `Encounter.type`.
-- **iSantePlus domain tables are derived denormalizations** (incl. `patient_isanteplus`, declared as a source) — publish canonical `obs`/`encounter`, not these (avoid double-counting).
-- **Source-side pruning (optimization):** models merge by uuid over the full source each cycle (correct, and the delta loader bounds what's pushed). Adding `WHERE changed_at BETWEEN @start_dt AND @end_dt` would prune the source scan too — worthwhile only at large volume.
+Runs `sqlmesh run` → load → sleep in a tight loop. Use this where Kafka is not available.
+
+### Latency
+
+End-to-end latency is approximately **5 minutes**, determined by SQLMesh's minimum cron
+interval (`*/5 * * * *`). Kafka reduces idle overhead but does not reduce latency below the
+cron floor.
+
+---
+
+## Deployment
+
+The included `Dockerfile` builds the production pipeline image:
+
+1. Renders `config.yaml` from environment variables at container start.
+2. Applies the initial `sqlmesh plan` on first boot.
+3. Starts the runtime driver selected by `RUN_MODE` (`kafka` or `poll`).
+
+The image runs as the `fhir-pipeline` service in the SEDISH `hie` Docker Swarm stack,
+alongside the Consolidé server, OpenHIM, OpenCR, and HAPI FHIR.
+
+---
+
+## Mapping Reference
+
+All mapping rules are derived from the CHARESS specification. Key decisions:
+
+| Concern | Rule |
+|---|---|
+| Composite key | `(mspp_code, patient_id)` — `patient_id` alone is not unique across sites |
+| Resource ID | OpenMRS `uuid` (globally unique per row); MD5-derived stable key for tables without a uuid |
+| Gender | Accepts both code (`M`/`F`) and label (`Male`/`Female`) |
+| Per-site MRNs | Mapped to `Patient.identifier` via `ref.identifier_systems` (must match OpenCR's `internalid` config) |
+| National fingerprint ID | Attached only for `statut ∈ {UNIQUE, DOUBLON}`; DOUBLON reuses the canonical shared ID |
+| Status downgrade | A `UNIQUE → A_REVOIR` change advances `changed_at` via the `fp_chg` CTE, triggering a re-push to OpenCR even though the national ID is removed from the resource |
+| Observations | `value[x]` dispatched by type (numeric, coded, datetime, text, drug); concept label from `concept_name` |
+| Deceased | `deceasedDateTime` when death date is known; `deceasedBoolean` otherwise |
+| Phone | Emitted as `Patient.telecom` from the `Telephone Number` person attribute (feeds OpenCR's phone match rule) |
+
+See [`examples/`](examples/) for representative FHIR output — Patient (with and without a
+national ID), Encounter, Observation, Condition, AllergyIntolerance, MedicationRequest, and a
+complete SHR transaction Bundle.
+
+---
+
+## Testing
+
+SQLMesh unit tests cover each FHIR resource type in isolation, using in-memory fixtures
+against the `test_connection` gateway:
+
+```bash
+sqlmesh test
+```
+
+Tests live in `tests/<domain>/` and are structured as YAML fixtures (input rows → expected
+output rows). Each test is self-contained: all required `vars` are declared inline, and input
+tables provide only the columns the model touches.
+
+---
+
+## Project Structure
+
+```
+config.template.yaml        gateway definitions (source + output DB), FHIR variable defaults
+external_models.yaml        typed column declarations for consolidated_db source tables
+models/fhir/                FHIR R4 mapping models (one .sql per resource type)
+models/ref_*/               reference seed data (identifier_type → FHIR system URI)
+loader/
+  push_to_openhim.py        delta loader — reads fhir.* views, PUTs to OpenHIM
+  run_continuous.sh         poll driver (sqlmesh run → load → sleep loop)
+  run_kafka.py              Kafka driver (event-triggered cycles)
+audits/                     SQLMesh data quality assertions
+tests/<domain>/             unit tests by resource domain
+examples/                   representative FHIR JSON output from the models
+documentation/domains/      per-resource mapping notes
+docs/architecture.png       SEDISH / Roaming Care architecture diagram
+schema/                     consolidated_db DDL dump (authoritative source reference)
+```
+
+---
+
+## Known Limitations
+
+The transform and load are verified end-to-end against the real schema. The following items
+are pending upstream data delivery from CHARESS and do not block the pipeline itself:
+
+- **`national_fingerprint_mapping` absent from the DDL dump** — the identity and DOUBLON
+  logic is fully implemented and tested via fixtures; the feature is inert until the table
+  is present in a live `consolidated_db`.
+- **No `concept_reference_*` table** — Observations currently use `concept_name` labels and
+  local concept codes. CIEL/SNOMED codings will be added once the reference table is confirmed
+  in the schema.
+- **Dimension tables unpopulated** — `patient_identifier_type`, `encounter_type`, and
+  visit-type tables exist in the schema but contain no data. Identifier system URIs and
+  `Encounter.type` codes cannot be finalised until reference rows are delivered.
+- **No `provider` table** — `MedicationRequest.requester` and `Encounter` practitioner
+  references are omitted. The `encounter_provider_openmrs` table carries per-link UUIDs
+  (not per-provider), making stable Practitioner stubs impossible without a dedicated
+  provider table.
+- **Source-side scan optimisation** — models currently merge over the full source on each
+  cycle (correct, and the delta loader bounds what is pushed to OpenHIM). Adding
+  `WHERE changed_at BETWEEN @start_dt AND @end_dt` to each model would prune the source
+  scan as well; this is worthwhile only at high row volumes.

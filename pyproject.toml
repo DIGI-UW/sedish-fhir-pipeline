@@ -1,7 +1,7 @@
 [project]
-name = "consolidated-fhir-mapper"
+name = "sedish-fhir-pipeline"
 version = "0.1.0"
-description = "Map the consolidated OpenMRS DB to FHIR (OpenCR + SHR) with SQLMesh. MySQL-only."
+description = "FHIR R4 transformation and load pipeline for the SEDISH Haiti HIE. Maps consolidated OpenMRS data to OpenCR (MPI) and SHR via OpenHIM."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
