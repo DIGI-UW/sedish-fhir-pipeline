@@ -309,10 +309,6 @@
           "type": "Patient",
           "reference": "Patient/uuid-p-11106-11"
         },
-        "requester": {
-          "type": "Practitioner",
-          "reference": "Practitioner/5"
-        },
         "authoredOn": "2026-01-02T09:00:00",
         "resourceType": "MedicationRequest",
         "dosageInstruction": [
