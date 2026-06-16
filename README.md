@@ -273,4 +273,4 @@ Verified against the live `consolidated_db` (`54.212.165.76`, 2026-06-16 — a ~
 - **No `concept_reference_*` table** — Observations use `concept_name` labels and local concept
   codes. CIEL/SNOMED codings will be added once the reference table is confirmed.
 - **No `provider` table** — `MedicationRequest.requester` is omitted (`encounter_provider_openmrs`
-  carries per-link UUIDs, not per-provider UUIDs).
+  carries per-link UUIDs, not per-provider UUIDs)..
