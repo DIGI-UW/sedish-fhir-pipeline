@@ -9,7 +9,6 @@ set -e
 : "${FHIR_DB_NAME:=fhir}"
 : "${FHIR_TEST_DB:=fhir_test}"
 : "${NATIONAL_ID_SYSTEM:=http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code}"
-: "${RUN_MODE:=kafka}"
 
 cat > /app/config.yaml <<YAML
 gateways:
@@ -47,8 +46,5 @@ until sqlmesh plan --auto-apply --skip-tests; do
   sleep 10
 done
 
-case "${RUN_MODE}" in
-  kafka) echo "entrypoint: RUN_MODE=kafka"; exec python loader/run_kafka.py ;;
-  poll)  echo "entrypoint: RUN_MODE=poll";  exec sh loader/run_continuous.sh ;;
-  *) echo "entrypoint: unknown RUN_MODE='${RUN_MODE}' (use kafka|poll)"; exit 1 ;;
-esac
+echo "entrypoint: starting the continuous poll loop"
+exec sh loader/run_continuous.sh

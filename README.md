@@ -185,31 +185,24 @@ curl -s 'http://hapi-fhir:8080/fhir/Encounter/<uuid>'
 The pipeline runs indefinitely. A new or updated record in `consolidated_db` propagates to
 OpenCR and the SHR within one cycle (~5 minutes).
 
-**Kafka driver (default, event-triggered):**
-
-```bash
-RUN_MODE=kafka python loader/run_kafka.py
-```
-
-Consumes the Consolidé server's `fhir.patient.changed` topic. Each event triggers one
-`sqlmesh run` → load cycle. Events replay from Kafka if OpenHIM is temporarily unavailable.
-
-**Poll driver (fallback):**
+**Poll driver:**
 
 ```bash
 INTERVAL=30 bash loader/run_continuous.sh
 ```
 
-Runs `sqlmesh run` → load → sleep in a loop. Use this where Kafka is not available.
+Runs `sqlmesh run` → load → sleep in a loop (`INTERVAL` seconds). Both stages are idempotent,
+so a re-run never double-creates — it converges. (Consolidé is external and does not publish
+an event stream to us, so the pipeline polls rather than subscribing.)
 
 ---
 
 ## Deployment
 
 The included `Dockerfile` builds the production image. On start it renders `config.yaml`
-from environment variables, applies the initial `sqlmesh plan`, then starts the driver
-selected by `RUN_MODE`. It runs as the `fhir-pipeline` service in the SEDISH `hie` Docker
-Swarm stack.
+from environment variables, applies the initial `sqlmesh plan`, then runs the continuous poll
+loop. It is published as a GHCR image package and runs as the `fhir-pipeline` service in the
+SEDISH `sedish-fhir-pipeline` instant package.
 
 ---
 
@@ -254,8 +247,7 @@ models/fhir/                FHIR R4 mapping models (one .sql per resource type)
 models/ref_*/               reference seed data (identifier_type → FHIR system URI)
 loader/
   push_to_openhim.py        delta loader — reads fhir.* views, PUTs to OpenHIM
-  run_continuous.sh         poll driver
-  run_kafka.py              Kafka driver
+  run_continuous.sh         poll driver (the continuous loop)
 audits/                     SQLMesh data quality assertions
 tests/<domain>/             unit tests by resource domain
 examples/                   representative FHIR JSON output from the models

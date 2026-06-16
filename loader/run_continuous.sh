@@ -11,11 +11,7 @@
 #     3. sleep INTERVAL
 #
 # Latency ≈ INTERVAL. Both stages are idempotent (SQLMesh tracks the high-water mark;
-# the loader PUTs by uuid), so a re-run never double-creates — it converges.
-#
-# For lower latency / true event-driven, replace `sleep INTERVAL` with a blocking read
-# on the consolidated server's CDC stream (it already publishes binlog changes to Kafka)
-# and run one cycle per batch of new patient events (debounced). The body is unchanged.
+# the loader upserts by source key), so a re-run never double-creates — it converges.
 set -uo pipefail
 INTERVAL="${INTERVAL:-30}"   # seconds between cycles
 echo "continuous loader: cycle every ${INTERVAL}s (Ctrl-C to stop)"

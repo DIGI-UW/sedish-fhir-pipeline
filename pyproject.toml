@@ -7,7 +7,6 @@ requires-python = ">=3.11"
 dependencies = [
     "pymysql>=1.1.1",
     "sqlmesh>=0.235",
-    "kafka-python>=2.0",
 ]
 
 [dependency-groups]
