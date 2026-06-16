@@ -2,10 +2,11 @@
 # Render config.yaml from env, ensure the output schema is built, then serve.
 set -e
 
-: "${FHIR_DB_HOST:=consolidated-db}"
+# Connection to the Consolidé MySQL (external) — required, no default host/creds.
+: "${FHIR_DB_HOST:?FHIR_DB_HOST is required (the Consolidé MySQL host)}"
+: "${FHIR_DB_USER:?FHIR_DB_USER is required}"
+: "${FHIR_DB_PASS:?FHIR_DB_PASS is required}"
 : "${FHIR_DB_PORT:=3306}"
-: "${FHIR_DB_USER:=root}"
-: "${FHIR_DB_PASS:=consolidated}"
 : "${FHIR_DB_NAME:=fhir}"
 : "${FHIR_TEST_DB:=fhir_test}"
 : "${NATIONAL_ID_SYSTEM:=http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code}"
