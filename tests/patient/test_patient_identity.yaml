@@ -51,6 +51,12 @@ test_patient_with_national_id:
       rows: |
         person_attribute_type_id,mspp_code,name
         8,11106,Telephone Number
+    consolidated_db.patient_isanteplus:
+      format: csv
+      columns: {mspp_code: varchar(10), patient_id: int}
+      rows: |
+        patient_id,mspp_code,mother_name
+        11,11106,Therese Baptiste
     ref.identifier_systems:
       format: csv
       rows: |
@@ -116,6 +122,11 @@ test_patient_arevoir_no_national_id:
       columns: {mspp_code: varchar(10), person_attribute_type_id: int}
       rows: |
         person_attribute_type_id,mspp_code,name
+    consolidated_db.patient_isanteplus:
+      format: csv
+      columns: {mspp_code: varchar(10), patient_id: int}
+      rows: |
+        patient_id,mspp_code,mother_name
     ref.identifier_systems:
       format: csv
       rows: |

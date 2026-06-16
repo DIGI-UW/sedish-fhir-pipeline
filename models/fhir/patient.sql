@@ -84,6 +84,20 @@ idents AS (
          COALESCE(m.updated_at, m.created_at)
   FROM consolidated_db.national_fingerprint_mapping m
   WHERE m.national_id IS NOT NULL AND m.statut IN ('UNIQUE', 'DOUBLON')
+  UNION ALL
+  -- SEDISH source key (mspp_code + patient_id): the idempotency key per the CHARESS spec.
+  -- EVERY record carries it; OpenCR upserts the source record on it so the batch (this ETL)
+  -- and real-time feeds converge with no duplicate, regardless of uuid format. The loader
+  -- does a conditional update PUT /Patient?identifier=<source_key_system>|<mspp-patient_id>.
+  SELECT sk.mspp_code, sk.patient_id,
+         JSON_OBJECT(
+           'use', 'official',
+           'type', JSON_OBJECT('text', 'SEDISH Source Key'),
+           'system', @VAR('source_key_system', 'http://sedish-haiti.org/fhir/source-key'),
+           'value', CONCAT(sk.mspp_code, '-', CAST(sk.patient_id AS CHAR))),
+         '1970-01-01 00:00:00'
+  FROM consolidated_db.patient_openmrs sk
+  WHERE COALESCE(sk.voided, 0) = 0
 ),
 identifiers AS (
   SELECT mspp_code, patient_id, JSON_ARRAYAGG(ident) AS arr, MAX(chg) AS chg
@@ -109,7 +123,19 @@ phones AS (
   WHERE COALESCE(pa.voided, 0) = 0
     AND pat.name = @VAR('phone_attribute_name', 'Telephone Number')
     AND pa.value IS NOT NULL AND pa.value <> ''
+    -- demographic hygiene (CHARESS §4.3): neutralize junk so it can't falsely corroborate.
+    AND TRIM(pa.value) NOT IN ('?', '00000000', '0000000000', 'N/A', 'n/a', '-')
+    AND pa.value NOT REGEXP '^0+$'
   GROUP BY pa.mspp_code, pa.person_id
+),
+-- mother's first name: a demographic corroborator in OpenCR's linking cascade (CHARESS §5.2),
+-- sourced from the iSantePlus denormalization. Junk values blacklisted (§4.3).
+mothers AS (
+  SELECT mspp_code, patient_id, MAX(TRIM(mother_name)) AS mother_name
+  FROM consolidated_db.patient_isanteplus
+  WHERE mother_name IS NOT NULL AND TRIM(mother_name) <> ''
+    AND LOWER(TRIM(mother_name)) NOT IN ('unknown', 'inconnu', 'inconnue', 'n/a', 'na', 'none', '-', '?')
+  GROUP BY mspp_code, patient_id
 )
 SELECT
   pt.mspp_code,
@@ -125,7 +151,8 @@ SELECT
   ) AS changed_at,
   JSON_MERGE_PATCH(
    JSON_MERGE_PATCH(
-    JSON_OBJECT(
+    JSON_MERGE_PATCH(
+     JSON_OBJECT(
       'resourceType', 'Patient',
       'id', per.uuid,
       -- facility provenance: originating site (mspp_code).
@@ -156,6 +183,16 @@ SELECT
         THEN JSON_OBJECT('telecom', JSON_ARRAY(JSON_OBJECT(
                'system', 'phone', 'value', ph.phone, 'use', 'mobile')))
         ELSE JSON_OBJECT() END
+   ),
+   -- mother as Patient.contact[relationship=MTH]; feeds OpenCR's demographic cascade
+   -- (requires a matching decisionRules path in OpenCR to be used for linking).
+   CASE WHEN mo.mother_name IS NOT NULL
+        THEN JSON_OBJECT('contact', JSON_ARRAY(JSON_OBJECT(
+               'relationship', JSON_ARRAY(JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
+                 'system', 'http://terminology.hl7.org/CodeSystem/v3-RoleCode',
+                 'code', 'MTH', 'display', 'mother')))),
+               'name', JSON_OBJECT('text', mo.mother_name))))
+        ELSE JSON_OBJECT() END
   ) AS resource
 FROM consolidated_db.patient_openmrs pt
 JOIN consolidated_db.person_openmrs per
@@ -165,4 +202,5 @@ LEFT JOIN addresses ad ON ad.mspp_code = pt.mspp_code AND ad.person_id = pt.pati
 LEFT JOIN identifiers ids ON ids.mspp_code = pt.mspp_code AND ids.patient_id = pt.patient_id
 LEFT JOIN fp_chg fp  ON fp.mspp_code  = pt.mspp_code AND fp.patient_id  = pt.patient_id
 LEFT JOIN phones ph  ON ph.mspp_code  = pt.mspp_code AND ph.person_id   = pt.patient_id
+LEFT JOIN mothers mo ON mo.mspp_code  = pt.mspp_code AND mo.patient_id  = pt.patient_id
 WHERE COALESCE(pt.voided, 0) = 0

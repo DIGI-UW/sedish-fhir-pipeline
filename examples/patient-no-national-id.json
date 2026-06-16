@@ -10,7 +10,7 @@
   },
   "name": [
     {
-      "id": "9c24cd91-e5f0-48df-9b74-82dc2a6dc7a4",
+      "id": "uuid-n-12",
       "use": "official",
       "given": [
         "Marie"
@@ -24,13 +24,21 @@
   "birthDate": "1985-06-15",
   "identifier": [
     {
-      "id": "c1e09f9e-08f2-481c-a35a-70874495361b",
+      "id": "uuid-i-12",
       "use": "official",
       "type": {
         "text": "iSantePlus ID"
       },
-      "value": "ST00161",
+      "value": "PV00442",
       "system": "http://isanteplus.org/openmrs/fhir2/3-isanteplus-id"
+    },
+    {
+      "use": "official",
+      "type": {
+        "text": "SEDISH Source Key"
+      },
+      "value": "11106-12",
+      "system": "http://sedish-haiti.org/fhir/source-key"
     }
   ],
   "resourceType": "Patient",

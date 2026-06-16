@@ -50,6 +50,10 @@ SHR    = (env("SHR_USER",    "shr-pipeline"), env("SHR_PASS",    "instant101"))
 DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
 # Phase 1 (default): push Patient identities to OpenCR only — no clinical, no SHR.
 MPI_ONLY = env("MPI_ONLY", "1") not in ("", "0", "false")
+# Idempotency key per the CHARESS spec: OpenCR upserts the source record on the source key
+# (mspp_code+patient_id). Must match the `source_key_system` the patient model stamps, and be
+# listed in OpenCR's `internalid` systems. Requires OpenCR conditional-update support.
+SOURCE_KEY_SYSTEM = env("SOURCE_KEY_SYSTEM", "http://sedish-haiti.org/fhir/source-key")
 EPOCH = "1970-01-01 00:00:00"
 # Phase 1 processes patients in pages to avoid OOM on the ~2.39M patient initial load.
 BATCH_SIZE = int(env("BATCH_SIZE", "500"))
@@ -122,6 +126,13 @@ def index_patients(pat_rows):
     """rows (fhir_id, resource_json, changed_at) -> {fhir_id: resource_dict}."""
     return {fid: json.loads(res) for fid, res, _ in pat_rows}
 
+def cr_upsert_url(mspp_code, patient_id):
+    """FHIR conditional update on the source key — the CHARESS idempotency contract:
+    PUT /Patient?identifier=<source_key_system>|<mspp_code>-<patient_id>. OpenCR upserts the
+    source record by this key (0 matches -> create, 1 -> update), so re-runs and the parallel
+    real-time feed converge without duplicating the source record."""
+    return f"{OPENCR_URL}/Patient?identifier={SOURCE_KEY_SYSTEM}|{mspp_code}-{patient_id}"
+
 def index_clinical(*row_groups):
     """rows (fhir_id, patient_fhir_id, resource_json, changed_at) -> {patient_fhir_id: [resource_dict]}."""
     out = collections.defaultdict(list)
@@ -170,15 +181,16 @@ def main():
             max_changed = None
             offset = 0
             while True:
-                page = delta_page(cur, "patient", "fhir_id, resource", wm, BATCH_SIZE, offset)
+                page = delta_page(cur, "patient", "fhir_id, mspp_code, patient_id, resource", wm, BATCH_SIZE, offset)
                 if not page:
                     break
-                patient_by_id = index_patients(page)
-                for pid in sorted(patient_by_id):
-                    cr = send(f"{OPENCR_URL}/Patient/{pid}", "PUT", OPENCR, patient_by_id[pid])
+                # conditional upsert on the source key (mspp_code+patient_id), sorted by fhir_id
+                # for deterministic ordering. The FHIR resource id stays the uuid (Phase-2 refs).
+                for fhir_id, mspp_code, patient_id, res, _chg in sorted(page, key=lambda r: r[0]):
+                    cr = send(cr_upsert_url(mspp_code, patient_id), "PUT", OPENCR, json.loads(res))
                     good = cr in ("200", "201", "DRY_RUN")
                     ok, fail = ok + good, fail + (not good)
-                    print(f"Patient/{pid}  CR={cr}")
+                    print(f"Patient/{fhir_id} (src {mspp_code}-{patient_id})  CR={cr}")
                 batch_max = latest_changed(page)
                 if batch_max and (max_changed is None or batch_max > max_changed):
                     max_changed = batch_max

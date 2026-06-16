@@ -10,7 +10,7 @@
   },
   "name": [
     {
-      "id": "969ee6b1-e68b-479c-95b9-62380f0ff5ed",
+      "id": "uuid-n-11",
       "use": "official",
       "given": [
         "Jean"
@@ -22,7 +22,7 @@
   "gender": "male",
   "address": [
     {
-      "id": "281dec97-01f6-4bf4-9807-a74a4f73ed54",
+      "id": "uuid-a-11",
       "use": "home",
       "city": "Dessalines",
       "state": "Artibonite",
@@ -37,11 +37,29 @@
             },
             {
               "url": "http://fhir.openmrs.org/ext/address#address2",
-              "valueString": "Rue Lamartiniere"
+              "valueString": null
             },
             {
               "url": "http://fhir.openmrs.org/ext/address#address3",
               "valueString": "3e Section"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "contact": [
+    {
+      "name": {
+        "text": "Therese Baptiste"
+      },
+      "relationship": [
+        {
+          "coding": [
+            {
+              "code": "MTH",
+              "system": "http://terminology.hl7.org/CodeSystem/v3-RoleCode",
+              "display": "mother"
             }
           ]
         }
@@ -58,7 +76,7 @@
   "birthDate": "1990-01-01",
   "identifier": [
     {
-      "id": "95dfc8dc-5944-45b8-9fa3-730ea68452cd",
+      "id": "uuid-i-11",
       "use": "official",
       "type": {
         "text": "iSantePlus ID"
@@ -73,6 +91,14 @@
       },
       "value": "HT-00001830",
       "system": "http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code"
+    },
+    {
+      "use": "official",
+      "type": {
+        "text": "SEDISH Source Key"
+      },
+      "value": "11106-11",
+      "system": "http://sedish-haiti.org/fhir/source-key"
     }
   ],
   "resourceType": "Patient",
