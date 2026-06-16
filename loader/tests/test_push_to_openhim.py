@@ -244,10 +244,10 @@ def test_main_cold_pushes_everything_exactly(monkeypatch):
         ("PUT",  f"{L.OPENCR_URL}/Patient/pA"),
         ("POST", L.SHR_URL),
     ]
-    # CR PUT carries the patient resource with the CR credentials
-    assert sent[0][2] == ("openshr", "openshr") and sent[0][3] == {"resourceType": "Patient", "id": "pA"}
-    # SHR POST is the full transaction bundle with SHR creds, patient first
-    assert sent[1][2] == ("shr-pipeline", "instant101")
+    # CR PUT carries the patient resource, authenticated as the one OpenHIM client
+    assert sent[0][2] == L.OPENHIM and sent[0][3] == {"resourceType": "Patient", "id": "pA"}
+    # SHR POST is the full transaction bundle, same OpenHIM client (both channels), patient first
+    assert sent[1][2] == L.OPENHIM
     assert sent[1][3] == {
         "resourceType": "Bundle", "type": "transaction",
         "entry": [
@@ -398,7 +398,7 @@ def test_mpi_only_pushes_patient_to_cr_only(monkeypatch):
     sent, conn, cur = _run_main(monkeypatch, data, mpi_only=True)
     # exactly one outbound call: conditional update on the source key. No SHR POST, no globals.
     assert [(m, u) for m, u, _, _ in sent] == [("PUT", L.cr_upsert_url("11106", 11))]
-    assert sent[0][2] == ("openshr", "openshr")
+    assert sent[0][2] == L.OPENHIM
     assert sent[0][3] == {"resourceType": "Patient", "id": "pA"}
     # only the patient watermark advances; clinical watermarks are left untouched for Phase 2.
     assert _advances(cur) == {"patient": DT1}

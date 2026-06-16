@@ -24,8 +24,10 @@ Env (defaults = stock SEDISH swarm):
   FHIR_DB_HOST/PORT/USER/PASS/NAME    where SQLMesh wrote the fhir.* views (NAME=fhir)
   STATE_DB                            isolated db for the watermark table (default loader_state)
   MPI_ONLY=1                          Phase 1: Patient->OpenCR only (default). 0 = full pipeline.
-  OPENCR_URL/OPENCR_USER/OPENCR_PASS  CR channel on OpenHIM
-  SHR_URL/SHR_USER/SHR_PASS           SHR channel on OpenHIM  (Phase 2 only)
+  OPENHIM_USER/OPENHIM_PASS           OpenHIM client basic-auth — ONE client for both channels
+                                      (default `consolidated`, role emr, allowed on /CR and /SHR)
+  OPENCR_URL                          CR channel on OpenHIM (identity / MPI)
+  SHR_URL                             SHR channel on OpenHIM (clinical; Phase 2 only)
   DRY_RUN=1                           preview; don't POST and don't advance the watermark
 """
 import base64
@@ -45,8 +47,9 @@ FHIR_DB = dict(host=env("FHIR_DB_HOST", "fhir-mysql"), port=int(env("FHIR_DB_POR
 STATE_DB   = env("STATE_DB", "loader_state")
 OPENCR_URL = env("OPENCR_URL", "http://openhim-core:5001/CR/fhir").rstrip("/")
 SHR_URL    = env("SHR_URL",    "http://openhim-core:5001/SHR/fhir").rstrip("/")
-OPENCR = (env("OPENCR_USER", "openshr"),      env("OPENCR_PASS", "openshr"))
-SHR    = (env("SHR_USER",    "shr-pipeline"), env("SHR_PASS",    "instant101"))
+# /CR and /SHR are both OpenHIM channels, so we authenticate as a single OpenHIM client.
+# The `consolidated` client (role 'emr') is allowed on both channels — one credential, not two.
+OPENHIM = (env("OPENHIM_USER", "consolidated"), env("OPENHIM_PASS", "consolidated"))
 DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
 # Phase 1 (default): push Patient identities to OpenCR only — no clinical, no SHR.
 MPI_ONLY = env("MPI_ONLY", "1") not in ("", "0", "false")
@@ -159,7 +162,7 @@ def push_globals(cur):
             continue
         for _fid, res in rows:
             r = json.loads(res)
-            st = send(f"{SHR_URL}/{r['resourceType']}/{r['id']}", "PUT", SHR, r)
+            st = send(f"{SHR_URL}/{r['resourceType']}/{r['id']}", "PUT", OPENHIM, r)
             ok += st in ("200", "201", "DRY_RUN")
             pushed += 1
     if pushed:
@@ -187,7 +190,7 @@ def main():
                 # conditional upsert on the source key (mspp_code+patient_id), sorted by fhir_id
                 # for deterministic ordering. The FHIR resource id stays the uuid (Phase-2 refs).
                 for fhir_id, mspp_code, patient_id, res, _chg in sorted(page, key=lambda r: r[0]):
-                    cr = send(cr_upsert_url(mspp_code, patient_id), "PUT", OPENCR, json.loads(res))
+                    cr = send(cr_upsert_url(mspp_code, patient_id), "PUT", OPENHIM, json.loads(res))
                     good = cr in ("200", "201", "DRY_RUN")
                     ok, fail = ok + good, fail + (not good)
                     print(f"Patient/{fhir_id} (src {mspp_code}-{patient_id})  CR={cr}")
@@ -238,9 +241,9 @@ def main():
                 # patient here means intentionally excluded, not a not-yet-arrived race.
                 print(f"  skip {pid}: no Patient row (voided/absent)")
                 continue
-            cr = send(f"{OPENCR_URL}/Patient/{pid}", "PUT", OPENCR, patient)
+            cr = send(f"{OPENCR_URL}/Patient/{pid}", "PUT", OPENHIM, patient)
             mine = clin_by_pat.get(pid, [])
-            shr = send(SHR_URL, "POST", SHR, build_bundle(patient, mine))
+            shr = send(SHR_URL, "POST", OPENHIM, build_bundle(patient, mine))
             good = cr in ("200", "201", "DRY_RUN") and shr in ("200", "201", "DRY_RUN")
             ok, fail = ok + good, fail + (not good)
             print(f"Patient/{pid}  CR={cr}  SHR={shr}  changed_clinical={len(mine)}")
