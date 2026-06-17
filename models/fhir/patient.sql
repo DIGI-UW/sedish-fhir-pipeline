@@ -79,7 +79,7 @@ idents AS (
          JSON_OBJECT(
            'use', 'official',
            'type', JSON_OBJECT('text', 'National FP ID'),
-           'system', @VAR('national_id_system'),
+           'system', @VAR('national_id_system', 'http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code'),
            'value', m.national_id),
          COALESCE(m.updated_at, m.created_at)
   FROM consolidated_db.national_fingerprint_mapping m

@@ -9,7 +9,6 @@ set -e
 : "${FHIR_DB_PORT:=3306}"
 : "${FHIR_DB_NAME:=fhir}"
 : "${FHIR_TEST_DB:=fhir_test}"
-: "${NATIONAL_ID_SYSTEM:=http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code}"
 
 cat > /app/config.yaml <<YAML
 gateways:
@@ -18,7 +17,6 @@ gateways:
     test_connection: {type: mysql, host: ${FHIR_DB_HOST}, port: ${FHIR_DB_PORT}, user: ${FHIR_DB_USER}, password: ${FHIR_DB_PASS}, database: ${FHIR_TEST_DB}}
 default_gateway: mysql
 model_defaults: {dialect: mysql}
-variables: {national_id_system: '${NATIONAL_ID_SYSTEM}'}
 disable_anonymized_analytics: true
 YAML
 
