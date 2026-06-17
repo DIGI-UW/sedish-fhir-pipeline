@@ -31,18 +31,22 @@ and the **Shared Health Record** (SHR) through OpenHIM — continuously, in near
 SEDISH is Haiti's national Health Information Exchange. Multiple iSantePlus EMR sites
 (HUEH, HUP, HFSCJ, and others) each maintain their own OpenMRS instance. The CHARESS
 *Consolidé* server aggregates all site data into a single `consolidated_db` via MySQL
-binlog CDC. This pipeline sits between the Consolidé server and SEDISH:
+binlog CDC. **Consolidé is external and read-only to us**, and MySQL can't JOIN across
+servers, so SQLMesh can't run there. This pipeline sits between Consolidé and SEDISH:
 
-1. **Transform** — SQLMesh models read `consolidated_db` and emit FHIR R4 JSON for each
-   patient and their clinical record.
-2. **Load** — a Python loader pushes changed records through OpenHIM to two destinations:
+1. **Sync** — `loader/sync_source.py` copies `consolidated_db` from the read-only Consolidé
+   into a **local MySQL** (full on first run, incremental by `date_updated` after), so SQLMesh
+   has the source locally. Needs only read-only `SELECT` on Consolidé.
+2. **Transform** — SQLMesh models read the local `consolidated_db` copy and emit FHIR R4 JSON
+   for each patient (and, in Phase 2, their clinical record), writing to a local `fhir` schema.
+3. **Load** — a Python loader pushes changed records through OpenHIM to two destinations:
    - **OpenCR** receives patient identity (demographics, per-site MRNs, national fingerprint
      ID) and performs cross-site deduplication into golden records.
    - **SHR** (HAPI FHIR) receives the clinical record (Encounters, Observations, Conditions,
-     Allergies, Medications) linked to the same patient.
+     Allergies, Medications) linked to the same patient. *(Phase 2 — `MPI_ONLY=0`.)*
 
-This repo covers the *transform* and *load* steps only. The *extract* — replicating site
-data into `consolidated_db` — is the Consolidé server's responsibility.
+This repo covers *sync*, *transform*, and *load*. The *extract* — replicating site data into
+Consolidé's `consolidated_db` — is the Consolidé server's responsibility.
 
 ---
 
@@ -52,15 +56,15 @@ Full architecture diagram: [SEDISH / Roaming Care architecture](https://www.canv
 
 ```
  Site 1 (iSantePlus) ┐
- Site 2 (iSantePlus) ┤── binlog CDC ──▶  Consolidé: consolidated_db
+ Site 2 (iSantePlus) ┤── binlog CDC ──▶  Consolidé: consolidated_db   (EXTERNAL, read-only)
  Site N (iSantePlus) ┘                   (OpenMRS-shaped, multi-site)
-                                                    │
-                                     ┌──────────────┘
-                                     │  sedish-fhir-pipeline
-                                     │  ① SQLMesh models
-                                     │     consolidated_db → fhir.*
-                                     │  ② loader/push_to_openhim.py
-                                     └──────────────────────────────▶ OpenHIM
+                                                    │  ① sync_source.py (read-only SELECT,
+                                                    │     incremental by date_updated)
+                                                    ▼
+                                         local MySQL: consolidated_db copy + fhir output
+                                                    │  ② SQLMesh models  consolidated_db → fhir.*
+                                                    │  ③ loader/push_to_openhim.py
+                                                    └──────────────────────────────▶ OpenHIM
                                                                           │
                                                       ┌───────────────────┴────────────────────┐
                                                       ▼                                        ▼
@@ -88,7 +92,8 @@ single golden record, and the SHR re-points all clinical references onto it.
 | Requirement | Notes |
 |---|---|
 | Python ≥ 3.11 | `uv` recommended for dependency management |
-| MySQL ≥ 8.0 | Read access to `consolidated_db`; a writable schema for SQLMesh state |
+| Consolidé MySQL ≥ 8.0 | **Read-only** `SELECT` on `consolidated_db` (the external source) |
+| Local MySQL ≥ 8.0 | Writable — holds the synced `consolidated_db` copy + the `fhir` output/state (`--sql-mode=` for legacy zero-dates) |
 | OpenHIM | Channels `/CR/fhir` and `/SHR/fhir` configured with client credentials |
 
 ---
@@ -111,30 +116,35 @@ Copy the configuration template and fill in your connection details:
 cp config.template.yaml config.yaml
 ```
 
-`config.yaml` is git-ignored. Key sections:
+`config.yaml` is git-ignored. SQLMesh uses **one gateway** — the **local** MySQL, which holds
+both the synced `consolidated_db` copy and the `fhir` output (source and output must be on one
+server; MySQL can't JOIN across servers):
 
 ```yaml
 gateways:
-  default:
+  mysql:
     connection:
-      host: <consolidated-db-host>      # Consolidé server (read-only)
-      database: consolidated_db
-  output:
-    connection:
-      host: <output-db-host>            # writable schema for SQLMesh materialisation
-      database: digi_fhir
-
-variables:
-  national_id_system: <uri>             # FHIR system URI OpenCR expects for the fingerprint ID
+      type: mysql
+      host: <local-mysql-host>          # the local pipeline MySQL (NOT Consolidé)
+      database: digi_fhir               # writable output + state schema
+default_gateway: mysql
+model_defaults: {dialect: mysql}
 ```
 
-Environment variables for the loader:
+The model variables (`national_id_system`, `source_key_system`, `phone_attribute_name`) all
+**self-default** in the models, so no `variables:` block is required.
+
+The **sync** reads Consolidé and the **loader/transform** read+write the local MySQL — set via env:
 
 | Variable | Default | Description |
 |---|---|---|
+| `SRC_HOST` / `SRC_PORT` / `SRC_USER` / `SRC_PASS` | — | external Consolidé MySQL (read-only) the sync copies from |
+| `SRC_DB` | `consolidated_db` | source schema on Consolidé |
+| `FHIR_DB_HOST` / `PORT` / `USER` / `PASS` | — | the **local** MySQL SQLMesh reads (synced copy) + writes (`fhir`) |
+| `FHIR_DB_NAME` | `fhir` | local output schema |
 | `OPENCR_URL` | `http://openhim-core:5001/CR/fhir` | OpenHIM channel for OpenCR |
 | `SHR_URL` | `http://openhim-core:5001/SHR/fhir` | OpenHIM channel for the SHR |
-| `FHIR_DB_HOST` | `localhost` | Host of the SQLMesh output database |
+| `OPENHIM_USER` / `OPENHIM_PASS` | `consolidated` | one OpenHIM client (role `emr`) for both channels |
 | `MPI_ONLY` | `1` | `1` = Phase 1 (identity to OpenCR only); `0` = Phase 2 (identity + clinical) |
 | `DRY_RUN` | `0` | `1` = preview changes without writing to OpenHIM |
 | `INTERVAL` | `30` | Poll interval in seconds (continuous mode) |
@@ -143,7 +153,17 @@ Environment variables for the loader:
 
 ## Running the Pipeline
 
-### 1. Transform — build the FHIR views
+### 1. Sync — copy the read-only source into the local MySQL
+
+```bash
+python loader/sync_source.py
+```
+
+Copies the tables the models read from the external Consolidé `consolidated_db` into the local
+MySQL — full on first run, then incremental by `date_updated` (watermark in `sync_state`). Needs
+only read-only `SELECT` on Consolidé.
+
+### 2. Transform — build the FHIR views
 
 ```bash
 sqlmesh plan --auto-apply
@@ -153,7 +173,7 @@ Materialises `fhir.patient`, `fhir.encounter`, `fhir.observation`, `fhir.conditi
 `fhir.allergy_intolerance`, `fhir.medication_request`, and `fhir.location`. On subsequent
 runs only rows whose `changed_at` watermark has advanced are reprocessed.
 
-### 2. Load — push to OpenCR and SHR
+### 3. Load — push to OpenCR and SHR
 
 ```bash
 # Preview first
@@ -167,7 +187,7 @@ The loader compares each row's `changed_at` against a per-resource high-water ma
 `loader_state` and issues `PUT` requests only for records that have changed. Both stages are
 **idempotent** — re-running is always safe.
 
-### 3. Verify
+### 4. Verify
 
 ```bash
 # Identity: two site records for one person should share one golden record
@@ -191,9 +211,9 @@ OpenCR and the SHR within one cycle (~5 minutes).
 INTERVAL=30 bash loader/run_continuous.sh
 ```
 
-Runs `sqlmesh run` → load → sleep in a loop (`INTERVAL` seconds). Both stages are idempotent,
-so a re-run never double-creates — it converges. (Consolidé is external and does not publish
-an event stream to us, so the pipeline polls rather than subscribing.)
+Runs **sync → `sqlmesh run` → load → sleep** in a loop (`INTERVAL` seconds). All stages are
+idempotent, so a re-run never double-creates — it converges. (Consolidé is external and does not
+publish an event stream to us, so the pipeline polls rather than subscribing.)
 
 ---
 
@@ -247,6 +267,7 @@ external_models.yaml        typed column declarations for consolidated_db source
 models/fhir/                FHIR R4 mapping models (one .sql per resource type)
 models/ref_*/               reference seed data (identifier_type → FHIR system URI)
 loader/
+  sync_source.py            sync: external read-only consolidated_db -> local copy
   push_to_openhim.py        delta loader — reads fhir.* views, PUTs to OpenHIM
   run_continuous.sh         poll driver (the continuous loop)
 audits/                     SQLMesh data quality assertions
