@@ -31,6 +31,10 @@ DST = dict(host=env("FHIR_DB_HOST", "pipeline-db"), port=int(env("FHIR_DB_PORT",
            connect_timeout=10)
 DST_DB = env("DST_DB", "consolidated_db")
 BATCH = int(env("SYNC_BATCH", "5000"))
+# Tables without date_updated (concept/concept_name/dimensions) are static reference data: sync
+# once, then skip while populated so we don't re-copy ~195k rows every cycle. Set SYNC_REFRESH_STATIC=1
+# to force a re-copy (e.g. when the CIEL dictionary is updated).
+REFRESH_STATIC = env("SYNC_REFRESH_STATIC", "") not in ("", "0", "false")
 EPOCH = "1970-01-01 00:00:00"
 
 # Tables the SQLMesh models read — taken from external_models.yaml so it stays in lockstep.
@@ -70,6 +74,11 @@ def sync_table(scur, dcur, table):
         dcur.execute(f"USE `{DST_DB}`")
         dcur.execute(scur.fetchone()[1])
     has_du = has_column(scur, SRC["database"], table, "date_updated")
+    # static reference table (no date_updated): sync once, then skip while already populated
+    if not has_du and not REFRESH_STATIC:
+        dcur.execute(f"SELECT EXISTS(SELECT 1 FROM `{DST_DB}`.`{table}` LIMIT 1)")
+        if dcur.fetchone()[0]:
+            return 0, "static (cached)"
     since = watermark(dcur, table) if has_du else EPOCH
     # Incremental only AFTER a baseline full copy (watermark advanced past epoch). The first
     # sync is always full, so rows with NULL/blank date_updated aren't missed.
