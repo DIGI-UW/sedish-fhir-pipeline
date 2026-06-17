@@ -229,8 +229,22 @@ INTERVAL=30 bash loader/run_continuous.sh
 ```
 
 Runs **sync → `sqlmesh run` → load → sleep** in a loop (`INTERVAL` seconds). All stages are
-idempotent, so a re-run never double-creates — it converges. (Consolidé is external and does not
-publish an event stream to us, so the pipeline polls rather than subscribing.)
+idempotent, so a re-run never double-creates — it converges.
+
+**Streaming driver (CDC) — `SYNC_MODE=cdc`:**
+
+The poll relies on Consolidé populating `date_updated`; where it doesn't (e.g. NULLs), the poll
+can't detect changes and falls back to full re-copies every cycle. The CDC driver
+(`loader/cdc_stream.py`) instead reads Consolidé's **binlog**: it snapshots once (pinning the binlog
+offset), then streams every INSERT/UPDATE/DELETE, applying only changed rows to `pipeline-db` and
+stamping their local `date_updated` so the SQLMesh `changed_at` + loader watermark fire downstream.
+The offset lives in a `cdc_state` table (resume-safe; at-least-once, idempotent on re-apply). After
+each batch it triggers one `sqlmesh run` + push — near-real-time, no `date_updated` dependency, no
+full re-copies.
+
+Requires on Consolidé: `log_bin=ON`, `binlog_format=ROW` (already set) and a user with
+**`REPLICATION SLAVE, REPLICATION CLIENT`** (+ `SELECT`). DDL/schema changes need a re-snapshot
+(delete the `cdc_state` row). Off by default (`SYNC_MODE=poll`); flip to `cdc` once the grant lands.
 
 ---
 

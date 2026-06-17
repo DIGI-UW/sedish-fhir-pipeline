@@ -43,8 +43,20 @@ do
   echo "entrypoint: MySQL not ready, retrying in 5s"; sleep 5
 done
 
-# SYNC mode: copy the external (read-only) consolidated_db into FHIR_DB so SQLMesh has the source
-# locally (MySQL can't JOIN across servers). Skipped in DIRECT mode (consolidated_db already on FHIR_DB).
+# CDC mode (SYNC_MODE=cdc): the binlog reader does its own snapshot + stream + downstream cycles,
+# so skip the poll-sync here. Requires SRC_* to point at Consolidé with REPLICATION privileges.
+if [ "${SYNC_MODE:-poll}" = "cdc" ]; then
+  : "${SRC_HOST:?SRC_HOST is required for SYNC_MODE=cdc}"
+  echo "entrypoint: applying initial sqlmesh plan (CDC mode)"
+  until sqlmesh plan --auto-apply --skip-tests; do
+    echo "entrypoint: plan failed, retrying in 10s"; sleep 10
+  done
+  echo "entrypoint: starting CDC binlog reader"
+  exec python loader/cdc_stream.py
+fi
+
+# POLL/DIRECT mode (default). SYNC mode: copy the external (read-only) consolidated_db into FHIR_DB
+# so SQLMesh has the source locally (MySQL can't JOIN across servers). Skipped in DIRECT mode.
 if [ -n "${SRC_HOST:-}" ]; then
   : "${SRC_USER:?SRC_USER is required when SRC_HOST is set}"
   : "${SRC_PASS:?SRC_PASS is required when SRC_HOST is set}"
