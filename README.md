@@ -202,8 +202,8 @@ an event stream to us, so the pipeline polls rather than subscribing.)
 The included `Dockerfile` builds the production image. On start it renders `config.yaml`
 from environment variables (`FHIR_DB_HOST/USER/PASS` are required — the Consolidé MySQL),
 applies the initial `sqlmesh plan`, then runs the continuous poll loop. The SEDISH
-`sedish-fhir-pipeline` instant package builds this image locally and runs it as the
-`fhir-pipeline` service (or pull the GHCR image — CI still publishes it).
+`sedish-fhir-pipeline` instant package builds this image locally (`sedish-fhir-pipeline:local`)
+and runs it as the `fhir-pipeline` service.
 
 ---
 
