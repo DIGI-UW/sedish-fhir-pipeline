@@ -38,6 +38,11 @@ import pymysql
 
 def env(k, d): return os.environ.get(k, d)
 
+def log(msg):
+    """Timestamped + flushed line. flush matters: stdout is block-buffered when piped (docker
+    logs), so without it a cycle's output only appears minutes later / after the process exits."""
+    print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {msg}", flush=True)
+
 FHIR_DB = dict(host=env("FHIR_DB_HOST", "fhir-mysql"), port=int(env("FHIR_DB_PORT", "3306")),
                user=env("FHIR_DB_USER", "root"), password=env("FHIR_DB_PASS", "root"),
                database=env("FHIR_DB_NAME", "fhir"))
@@ -48,8 +53,11 @@ MEDIATOR_URL = env("MEDIATOR_URL", "http://openhim-core:5001/consolidated/fhir")
 OPENHIM = (env("OPENHIM_USER", "consolidated"), env("OPENHIM_PASS", "consolidated"))
 DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
 EPOCH = "1970-01-01 00:00:00"
-# Page patients to avoid OOM on the ~2.39M patient initial load.
-BATCH_SIZE = int(env("BATCH_SIZE", "500"))
+# Page patients to avoid OOM on the ~2.39M patient initial load. Also the identity bundle size:
+# the mediator PUTs each patient to OpenCR sequentially, so a too-large bundle can exceed OpenHIM's
+# request timeout (the mediator finishes, but OpenHIM has already 500'd the loader → the watermark
+# never advances and the page retries forever). 100 keeps each bundle well under the timeout.
+BATCH_SIZE = int(env("BATCH_SIZE", "100"))
 # patient-scoped clinical views (each carries fhir_id, patient_fhir_id, changed_at).
 # Add a resource = a SQLMesh model + an entry here. Empty => identity-only.
 CLINICAL_VIEWS = [v.strip() for v in env("CLINICAL_VIEWS", "encounter,observation,allergy_intolerance,condition,medication_request").split(",") if v.strip()]
@@ -139,15 +147,20 @@ def push_identity(cur, conn):
     ok = fail = total = 0
     max_changed = None
     offset = 0
+    pages = 0
     while True:
         page = delta_page(cur, "patient", "fhir_id, resource", wm, BATCH_SIZE, offset)
         if not page:
             break
+        pages += 1
         patients = [json.loads(res) for _fid, res, _chg in sorted(page, key=lambda r: r[0])]
+        t0 = time.monotonic()
         st = post_bundle(patients)
+        ms = int((time.monotonic() - t0) * 1000)
         good = st in ("200", "201", "DRY_RUN")
         ok, fail = ok + (len(patients) if good else 0), fail + (0 if good else len(patients))
-        print(f"identity: page offset={offset} n={len(patients)} -> {st}")
+        lvl = "OK " if good else "ERR"
+        log(f"  identity[{lvl}] page={pages} offset={offset} n={len(patients)} {ms}ms -> {st}")
         batch_max = latest_changed(page)
         if batch_max and (max_changed is None or batch_max > max_changed):
             max_changed = batch_max
@@ -160,9 +173,10 @@ def push_identity(cur, conn):
             if max_changed is not None:        # only commit when there was something to advance
                 advance(cur, "patient", max_changed)
                 conn.commit()
-        else:
-            print(f"  identity: holding watermark; {fail} push(es) failed; retried next cycle")
-    print(f"  identity: patients={total} ok={ok} fail={fail}")
+        elif total:
+            log(f"  identity: HOLDING watermark @ {wm} — {fail} patient(s) failed; retried next cycle")
+    log(f"  identity: done patients={total} ok={ok} fail={fail} pages={pages} "
+        f"(bundle size BATCH_SIZE={BATCH_SIZE})")
     return fail
 
 def push_clinical(cur, conn):
@@ -184,19 +198,23 @@ def push_clinical(cur, conn):
         for fid, res in cur.fetchall():
             patient_by_id[fid] = json.loads(res)
 
-    ok = fail = 0
+    ok = fail = skipped = 0
+    t0 = time.monotonic()
     for pid in touched:
         patient = patient_by_id.get(pid)
         if not patient:
             # No Patient row => voided/filtered. Skip; its clinical watermark still advances
             # (we won't retry). Safe: consolidated_db creates the person before its obs/encounter
             # (FK order), so a missing patient here means intentionally excluded, not a race.
-            print(f"  skip {pid}: no Patient row (voided/absent)")
+            skipped += 1
+            log(f"  clinical[SKIP] {pid}: no Patient row (voided/absent)")
             continue
         st = post_bundle([patient, *clin_by_pat[pid]])
         good = st in ("200", "201", "DRY_RUN")
         ok, fail = ok + good, fail + (not good)
-        print(f"Patient/{pid}  -> {st}  changed_clinical={len(clin_by_pat[pid])}")
+        if not good:                           # log every failure; successes roll up in the summary
+            log(f"  clinical[ERR] Patient/{pid} clin={len(clin_by_pat[pid])} -> {st}")
+    ms = int((time.monotonic() - t0) * 1000)
 
     if not DRY_RUN:
         if fail == 0:
@@ -209,9 +227,10 @@ def push_clinical(cur, conn):
             if advanced:                       # only commit when a watermark actually moved
                 conn.commit()
         else:
-            print(f"  clinical: holding watermark; {fail} push(es) failed; retried next cycle")
+            log(f"  clinical: HOLDING watermarks — {fail} push(es) failed; retried next cycle")
     deltas = " ".join(f"{v}={len(rows)}" for v, rows in clinical.items())
-    print(f"  clinical: patients={len(touched)} ok={ok} fail={fail}  (Δ {deltas})")
+    log(f"  clinical: done patients={len(touched)} ok={ok} fail={fail} skipped={skipped} "
+        f"{ms}ms (Δ {deltas})")
     return fail
 
 def push_globals(cur):
@@ -223,30 +242,35 @@ def push_globals(cur):
             cur.execute(f"SELECT fhir_id, resource FROM fhir.{view}")
             rows = cur.fetchall()
         except Exception as e:  # noqa: BLE001 — view may not exist yet
-            print(f"  globals: skip {view} ({e})")
+            log(f"  globals[SKIP] {view} ({e})")
             continue
         resources.extend(json.loads(res) for _fid, res in rows)
     if not resources:
         return 0
     st = post_bundle(resources)
     good = st in ("200", "201", "DRY_RUN")
-    print(f"  globals: {len(resources)} resources ({','.join(GLOBAL_VIEWS)}) -> {st}")
+    log(f"  globals[{'OK ' if good else 'ERR'}] {len(resources)} resources "
+        f"({','.join(GLOBAL_VIEWS)}) -> {st}")
     return 0 if good else 1
 
 def main():
     conn = pymysql.connect(**FHIR_DB, autocommit=False)
+    started = time.monotonic()
     with conn.cursor() as cur:
         ensure_state(cur)
         # One endpoint, the mediator routes by resource type:
         #   identity (Patient) -> OpenCR
         #   clinical           -> SHR   [skipped if CLINICAL_VIEWS is empty]
         #   globals            -> SHR
-        push_identity(cur, conn)
+        log(f"cycle start -> {MEDIATOR_URL}  (mode={'DRY_RUN' if DRY_RUN else 'live'})")
+        fails = push_identity(cur, conn)
         if CLINICAL_VIEWS:
-            push_clinical(cur, conn)
+            fails += push_clinical(cur, conn)
         if GLOBAL_VIEWS:
-            push_globals(cur)
-        print(f"DONE{'  [DRY_RUN]' if DRY_RUN else ''}")
+            fails += push_globals(cur)
+        secs = round(time.monotonic() - started, 1)
+        verdict = "clean" if fails == 0 else f"{fails} failure(s) — will retry"
+        log(f"cycle done in {secs}s — {verdict}{'  [DRY_RUN]' if DRY_RUN else ''}")
 
 if __name__ == "__main__":
     main()
