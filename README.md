@@ -39,11 +39,16 @@ servers, so SQLMesh can't run there. This pipeline sits between Consolidé and S
    has the source locally. Needs only read-only `SELECT` on Consolidé.
 2. **Transform** — SQLMesh models read the local `consolidated_db` copy and emit FHIR R4 JSON
    for each patient (and, in Phase 2, their clinical record), writing to a local `fhir` schema.
-3. **Load** — a Python loader pushes changed records through OpenHIM to two destinations:
+3. **Load** — a Python loader pushes changed records through OpenHIM, routing by resource type
+   (the type is the routing decision — no mode flag):
    - **OpenCR** receives patient identity (demographics, per-site MRNs, national fingerprint
      ID) and performs cross-site deduplication into golden records.
    - **SHR** (HAPI FHIR) receives the clinical record (Encounters, Observations, Conditions,
-     Allergies, Medications) linked to the same patient. *(Phase 2 — `MPI_ONLY=0`.)*
+     Allergies, Medications) linked to the same patient.
+
+   Both run every cycle off their own watermarks, so one deployment feeds identity to OpenCR and
+   clinical to the SHR at once. To run identity-only (e.g. before the SHR is validated), set
+   `CLINICAL_VIEWS=` (empty) — no redeploy of logic, just config.
 
 This repo covers *sync*, *transform*, and *load*. The *extract* — replicating site data into
 Consolidé's `consolidated_db` — is the Consolidé server's responsibility.
@@ -145,7 +150,7 @@ The **sync** reads Consolidé and the **loader/transform** read+write the local 
 | `OPENCR_URL` | `http://openhim-core:5001/CR/fhir` | OpenHIM channel for OpenCR |
 | `SHR_URL` | `http://openhim-core:5001/SHR/fhir` | OpenHIM channel for the SHR |
 | `OPENHIM_USER` / `OPENHIM_PASS` | `consolidated` | one OpenHIM client (role `emr`) for both channels |
-| `MPI_ONLY` | `1` | `1` = Phase 1 (identity to OpenCR only); `0` = Phase 2 (identity + clinical) |
+| `CLINICAL_VIEWS` | `encounter,observation,allergy_intolerance,condition,medication_request` | patient-scoped views bundled to the SHR; set empty for identity-only |
 | `DRY_RUN` | `0` | `1` = preview changes without writing to OpenHIM |
 | `INTERVAL` | `30` | Poll interval in seconds (continuous mode) |
 
