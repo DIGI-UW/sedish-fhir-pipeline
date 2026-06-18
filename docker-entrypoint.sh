@@ -1,56 +1,88 @@
 #!/usr/bin/env sh
-# Render config.yaml, build the output schema, then serve the continuous loop.
 #
-# DIRECT mode (only mode): SQLMesh runs ON Consolidé — FHIR_DB_* points at the Consolidé server,
-# which holds consolidated_db (read) and the fhir/sqlmesh/sqlmesh__fhir schemas (write). No copy.
-set -e
+# Entrypoint for the SEDISH FHIR pipeline.
+#
+# Renders the SQLMesh config from the environment, prepares the database, builds the FHIR
+# output schema, and hands off to the continuous loop. Supports two deployment modes, selected
+# automatically by whether SRC_HOST is set:
+#
+#   SYNC mode   (SRC_* set)   — Consolidé is read-only to us. Each cycle copies the changed rows
+#                               of consolidated_db into a local MySQL (FHIR_DB_*), where SQLMesh
+#                               then transforms them. Needs only SELECT on Consolidé.
+#
+#   DIRECT mode (SRC_* unset) — we have write access on Consolidé. FHIR_DB_* points at Consolidé
+#                               itself; SQLMesh reads consolidated_db and writes the fhir schema
+#                               on that one server. No copy, no local MySQL.
+#
+# The same image serves both; only the environment differs.
+#
+set -eu
 
-# FHIR_DB_* = the MySQL SQLMesh reads (consolidated_db) and writes (fhir) — i.e. Consolidé.
+# ── Configuration ────────────────────────────────────────────────────────────
+# FHIR_DB_* — the MySQL SQLMesh reads and writes (the local copy in SYNC, Consolidé in DIRECT).
 : "${FHIR_DB_HOST:?FHIR_DB_HOST is required}"
 : "${FHIR_DB_USER:?FHIR_DB_USER is required}"
 : "${FHIR_DB_PASS:?FHIR_DB_PASS is required}"
 : "${FHIR_DB_PORT:=3306}"
 : "${FHIR_DB_NAME:=fhir}"
-: "${FHIR_TEST_DB:=fhir_test}"   # empty omits the test gateway (prod — no `sqlmesh test`)
-: "${ENSURE_DBS:=1}"             # 0 when schemas are pre-created (prod, no CREATE privilege)
+: "${FHIR_TEST_DB:=fhir_test}"   # set empty to omit the test gateway (production)
+: "${ENSURE_DBS:=1}"             # set 0 when the schemas are pre-created and we lack CREATE
 
-TEST_CONN=""
-if [ -n "${FHIR_TEST_DB}" ]; then
-  TEST_CONN="
-    test_connection: {type: mysql, host: ${FHIR_DB_HOST}, port: ${FHIR_DB_PORT}, user: ${FHIR_DB_USER}, password: ${FHIR_DB_PASS}, database: ${FHIR_TEST_DB}}"
+MODE=$([ -n "${SRC_HOST:-}" ] && echo SYNC || echo DIRECT)
+log() { echo "entrypoint[$MODE]: $*"; }
+
+# ── Render SQLMesh config ────────────────────────────────────────────────────
+# The test gateway is only needed for `sqlmesh test` (CI/dev); omit it in production.
+TEST_GATEWAY=""
+if [ -n "$FHIR_TEST_DB" ]; then
+  TEST_GATEWAY="
+    test_connection: {type: mysql, host: $FHIR_DB_HOST, port: $FHIR_DB_PORT, user: $FHIR_DB_USER, password: $FHIR_DB_PASS, database: $FHIR_TEST_DB}"
 fi
 
 cat > /app/config.yaml <<YAML
 gateways:
   mysql:
-    connection: {type: mysql, host: ${FHIR_DB_HOST}, port: ${FHIR_DB_PORT}, user: ${FHIR_DB_USER}, password: ${FHIR_DB_PASS}, database: ${FHIR_DB_NAME}}${TEST_CONN}
+    connection: {type: mysql, host: $FHIR_DB_HOST, port: $FHIR_DB_PORT, user: $FHIR_DB_USER, password: $FHIR_DB_PASS, database: $FHIR_DB_NAME}$TEST_GATEWAY
 default_gateway: mysql
 model_defaults: {dialect: mysql}
 disable_anonymized_analytics: true
 YAML
 
-# Wait for the DB. ENSURE_DBS=1 creates the schemas; ENSURE_DBS=0 (pre-created, no CREATE) just
-# verifies it's reachable + exists. Idempotent.
-echo "entrypoint: waiting for MySQL ${FHIR_DB_HOST} (ensure_dbs=${ENSURE_DBS})"
+# ── Wait for the database, optionally creating the schemas ───────────────────
+# ENSURE_DBS=1 creates fhir (+ fhir_test); ENSURE_DBS=0 only verifies the DB is reachable and the
+# output schema exists (pre-created, e.g. DIRECT on Consolidé without CREATE privilege).
+log "waiting for MySQL $FHIR_DB_HOST (ensure_dbs=$ENSURE_DBS)"
 until python - <<PY 2>/dev/null
 import pymysql
-c = pymysql.connect(host="${FHIR_DB_HOST}", port=${FHIR_DB_PORT}, user="${FHIR_DB_USER}", password="${FHIR_DB_PASS}")
-with c.cursor() as cur:
-    if "${ENSURE_DBS}" == "1":
-        cur.execute("CREATE DATABASE IF NOT EXISTS \`${FHIR_DB_NAME}\`")
-        if "${FHIR_TEST_DB}":
-            cur.execute("CREATE DATABASE IF NOT EXISTS \`${FHIR_TEST_DB}\`")
-    cur.execute("USE \`${FHIR_DB_NAME}\`")
-c.commit()
+conn = pymysql.connect(host="$FHIR_DB_HOST", port=$FHIR_DB_PORT, user="$FHIR_DB_USER", password="$FHIR_DB_PASS")
+with conn.cursor() as cur:
+    if "$ENSURE_DBS" == "1":
+        cur.execute("CREATE DATABASE IF NOT EXISTS \`$FHIR_DB_NAME\`")
+        if "$FHIR_TEST_DB":
+            cur.execute("CREATE DATABASE IF NOT EXISTS \`$FHIR_TEST_DB\`")
+    cur.execute("USE \`$FHIR_DB_NAME\`")
+conn.commit()
 PY
 do
-  echo "entrypoint: MySQL not ready / ${FHIR_DB_NAME} missing, retrying in 5s"; sleep 5
+  log "MySQL not ready / $FHIR_DB_NAME missing — retrying in 5s"; sleep 5
 done
 
-echo "entrypoint: applying initial sqlmesh plan"
+# ── SYNC mode: seed the local copy from Consolidé before the first transform ──
+if [ "$MODE" = "SYNC" ]; then
+  : "${SRC_USER:?SRC_USER is required in SYNC mode}"
+  : "${SRC_PASS:?SRC_PASS is required in SYNC mode}"
+  log "initial sync from Consolidé $SRC_HOST"
+  until python loader/sync_source.py; do
+    log "Consolidé not reachable — retrying in 10s"; sleep 10
+  done
+fi
+
+# ── Build the FHIR output schema ─────────────────────────────────────────────
+log "applying initial SQLMesh plan"
 until sqlmesh plan --auto-apply --skip-tests; do
-  echo "entrypoint: plan failed, retrying in 10s"; sleep 10
+  log "plan failed — retrying in 10s"; sleep 10
 done
 
-echo "entrypoint: starting the continuous loop"
+# ── Serve ────────────────────────────────────────────────────────────────────
+log "starting the continuous loop"
 exec sh loader/run_continuous.sh
