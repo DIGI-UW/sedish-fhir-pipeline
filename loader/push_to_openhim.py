@@ -39,29 +39,21 @@ import pymysql
 def env(k, d): return os.environ.get(k, d)
 
 def log(msg):
-    """Timestamped + flushed line. flush matters: stdout is block-buffered when piped (docker
-    logs), so without it a cycle's output only appears minutes later / after the process exits."""
+    # flush: stdout is block-buffered when piped (docker logs)
     print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {msg}", flush=True)
 
 FHIR_DB = dict(host=env("FHIR_DB_HOST", "fhir-mysql"), port=int(env("FHIR_DB_PORT", "3306")),
                user=env("FHIR_DB_USER", "root"), password=env("FHIR_DB_PASS", "root"),
                database=env("FHIR_DB_NAME", "fhir"))
 STATE_DB     = env("STATE_DB", "loader_state")
-# Single endpoint: the fhir-router mediator's OpenHIM channel. It owns CR/SHR routing + dedupe.
 MEDIATOR_URL = env("MEDIATOR_URL", "http://openhim-core:5001/consolidated/fhir").rstrip("/")
-# The mediator's channel is an OpenHIM channel; authenticate as the `consolidated` client (role emr).
 OPENHIM = (env("OPENHIM_USER", "consolidated"), env("OPENHIM_PASS", "consolidated"))
 DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
 EPOCH = "1970-01-01 00:00:00"
-# Page patients to avoid OOM on the ~2.39M patient initial load. Also the identity bundle size:
-# the mediator PUTs each patient to OpenCR sequentially, so a too-large bundle can exceed OpenHIM's
-# request timeout (the mediator finishes, but OpenHIM has already 500'd the loader → the watermark
-# never advances and the page retries forever). 100 keeps each bundle well under the timeout.
+# patient page + identity bundle size; kept small so a bundle finishes within OpenHIM's timeout
 BATCH_SIZE = int(env("BATCH_SIZE", "100"))
-# patient-scoped clinical views (each carries fhir_id, patient_fhir_id, changed_at).
-# Add a resource = a SQLMesh model + an entry here. Empty => identity-only.
+# patient-scoped clinical views (add a resource = a model + an entry here). Empty => identity-only.
 CLINICAL_VIEWS = [v.strip() for v in env("CLINICAL_VIEWS", "encounter,observation,allergy_intolerance,condition,medication_request").split(",") if v.strip()]
-# global (non-patient-scoped) reference resources, re-pushed each cycle (idempotent).
 GLOBAL_VIEWS = [v.strip() for v in env("GLOBAL_VIEWS", "location").split(",") if v.strip()]
 
 def _auth(c): return "Basic " + base64.b64encode(f"{c[0]}:{c[1]}".encode()).decode()
@@ -90,8 +82,8 @@ def send(url, method, cred, body, retries=3):
 def ensure_state(cur):
     try:
         cur.execute(f"CREATE DATABASE IF NOT EXISTS {STATE_DB}")
-    except Exception:  # noqa: BLE001 — DIRECT mode points STATE_DB at a pre-created schema (e.g. fhir)
-        pass            # we lack global CREATE there; the table-create below is what matters
+    except Exception:  # noqa: BLE001 — STATE_DB may be a pre-created schema we lack CREATE on
+        pass
     cur.execute(f"""CREATE TABLE IF NOT EXISTS {STATE_DB}.loader_state (
                       resource_type VARCHAR(32) PRIMARY KEY,
                       last_changed_at DATETIME NOT NULL)""")
@@ -206,9 +198,7 @@ def push_clinical(cur, conn):
     for pid in touched:
         patient = patient_by_id.get(pid)
         if not patient:
-            # No Patient row => voided/filtered. Skip; its clinical watermark still advances
-            # (we won't retry). Safe: consolidated_db creates the person before its obs/encounter
-            # (FK order), so a missing patient here means intentionally excluded, not a race.
+            # voided/filtered patient — skip; watermark still advances (FK order means not a race)
             skipped += 1
             log(f"  clinical[SKIP] {pid}: no Patient row (voided/absent)")
             continue
