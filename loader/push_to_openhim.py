@@ -26,6 +26,12 @@ Env (defaults = stock SEDISH swarm):
   CLINICAL_VIEWS                      patient-scoped clinical views to bundle (empty = identity-only)
   GLOBAL_VIEWS                        non-patient-scoped reference views (Location, ...)
   DRY_RUN=1                           preview; don't POST and don't advance the watermark
+  SHR_FHIR_URL                        read-side SHR channel (reconcile.py only)
+  SOURCE_TAG_SYSTEM/SOURCE_TAG_CODE   provenance tag stamped on every pushed resource so the
+                                      reconcile step retracts only what this pipeline wrote
+
+Retraction (deletes/voids) is a separate step — see loader/reconcile.py (off unless
+RECONCILE_RETRACT_EVERY is set).
 """
 import base64
 import collections
@@ -47,7 +53,15 @@ FHIR_DB = dict(host=env("FHIR_DB_HOST", "fhir-mysql"), port=int(env("FHIR_DB_POR
                database=env("FHIR_DB_NAME", "fhir"))
 STATE_DB     = env("STATE_DB", "loader_state")
 MEDIATOR_URL = env("MEDIATOR_URL", "http://openhim-core:5001/consolidated/fhir").rstrip("/")
+# Read-side SHR channel — used only by the reconcile step (reconcile.py) to find what this pipeline
+# has written so it can retract resources the source no longer produces.
+SHR_FHIR_URL = env("SHR_FHIR_URL", "http://openhim-core:5001/SHR/fhir").rstrip("/")
 OPENHIM = (env("OPENHIM_USER", "consolidated"), env("OPENHIM_PASS", "consolidated"))
+# Uniform provenance tag stamped on every resource we push. The reconcile step scopes its
+# retraction to ONLY resources carrying this tag, so it can never touch data another feed
+# (XDS lab sender, the hourly batch) wrote into the shared SHR.
+SOURCE_TAG_SYSTEM = env("SOURCE_TAG_SYSTEM", "http://sedish-haiti.org/fhir/source")
+SOURCE_TAG_CODE   = env("SOURCE_TAG_CODE", "consolidated-pipeline")
 DRY_RUN = env("DRY_RUN", "") not in ("", "0", "false")
 EPOCH = "1970-01-01 00:00:00"
 # patient page + identity bundle size; kept small so a bundle finishes within OpenHIM's timeout
@@ -78,6 +92,27 @@ def send(url, method, cred, body, retries=3):
                 time.sleep(2 ** attempt)
                 continue
             return f"EXC {e}"
+
+def http_get(url, cred, retries=3):
+    """GET FHIR JSON (used by the reconcile step to read the SHR). Returns the parsed body or None."""
+    req = urllib.request.Request(url, method="GET",
+            headers={"Accept": "application/fhir+json", "Authorization": _auth(cred)})
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if 500 <= e.code < 600 and attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            log(f"  GET {url} -> ERR {e.code}")
+            return None
+        except Exception as e:  # noqa: BLE001
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            log(f"  GET {url} -> EXC {e}")
+            return None
 
 def ensure_state(cur):
     try:
@@ -137,10 +172,19 @@ def fetch_clinical(cur, keys):
     return out
 
 # --- pure helpers (no I/O; unit-tested in loader/tests) -------------------
+def tag_source(resource):
+    """Stamp the uniform provenance tag (in place) so the reconcile step can find — and only ever
+    retract — what THIS pipeline wrote, never another feed's data in the shared SHR. Idempotent."""
+    tags = resource.setdefault("meta", {}).setdefault("tag", [])
+    if not any(t.get("system") == SOURCE_TAG_SYSTEM and t.get("code") == SOURCE_TAG_CODE for t in tags):
+        tags.append({"system": SOURCE_TAG_SYSTEM, "code": SOURCE_TAG_CODE})
+    return resource
+
 def build_bundle(resources):
-    """FHIR transaction Bundle: each resource PUT by resourceType/id. The mediator splits it."""
+    """FHIR transaction Bundle: each resource tagged with our provenance + PUT by resourceType/id.
+    The mediator splits it (Patient -> OpenCR, clinical -> SHR)."""
     return {"resourceType": "Bundle", "type": "transaction",
-            "entry": [{"resource": r, "request": {"method": "PUT", "url": f"{r['resourceType']}/{r['id']}"}}
+            "entry": [{"resource": tag_source(r), "request": {"method": "PUT", "url": f"{r['resourceType']}/{r['id']}"}}
                       for r in resources]}
 
 def index_clinical(*row_groups):

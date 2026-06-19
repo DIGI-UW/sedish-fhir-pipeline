@@ -6,7 +6,9 @@
 #   1. sync_source.py      (SYNC mode only) — copy changed rows of consolidated_db into the local DB
 #   2. sqlmesh run         — incrementally rebuild fhir.* for rows changed since the last cycle
 #   3. push_to_openhim.py  — POST changed per-patient bundles to the fhir-router mediator
-#   4. sleep INTERVAL
+#   4. reconcile.py        — retract SHR clinical the source no longer produces (off unless
+#                            RECONCILE_RETRACT_EVERY>0; self-gates on its own cadence)
+#   5. sleep INTERVAL
 #
 # Every stage is idempotent (sync REPLACEs by PK, SQLMesh tracks its high-water mark, the loader
 # upserts via PUT-by-id and holds its watermark on failure), so a failed or repeated cycle
@@ -24,5 +26,6 @@ while true; do
   fi
   sqlmesh run                      || echo "$(ts) sqlmesh run failed — retrying next cycle"
   python loader/push_to_openhim.py || echo "$(ts) load failed — retrying next cycle"
+  python loader/reconcile.py       || echo "$(ts) reconcile failed — retrying next cycle"
   sleep "$INTERVAL"
 done
