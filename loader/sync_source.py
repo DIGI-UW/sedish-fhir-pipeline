@@ -24,15 +24,21 @@ Env:
   FHIR_DB_HOST/PORT/USER/PASS           local pipeline MySQL (writable)
   DST_DB   (default consolidated_db)    local schema to sync into
   SYNC_BATCH (default 5000)             rows per insert batch
+  SYNC_PROGRESS_EVERY (default 50000)   emit a progress line every N rows while copying a table
   SYNC_RECONCILE_EVERY (default 3600)   seconds between full reconciles (catches edits/deletes);
                                         0 disables (pure incremental = new rows only)
   SYNC_REFRESH_STATIC                   force a re-copy of static reference tables every cycle
 """
 import os
 import re
+import time
 import pymysql
 
 def env(k, d=None): return os.environ.get(k, d)
+
+def log(msg):
+    # timestamped + flushed (stdout is block-buffered under `docker logs`)
+    print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {msg}", flush=True)
 
 SRC = dict(host=env("SRC_HOST"), port=int(env("SRC_PORT", "3306")),
            user=env("SRC_USER"), password=env("SRC_PASS"),
@@ -42,6 +48,8 @@ DST = dict(host=env("FHIR_DB_HOST", "pipeline-db"), port=int(env("FHIR_DB_PORT",
            connect_timeout=10)
 DST_DB = env("DST_DB", "consolidated_db")
 BATCH = int(env("SYNC_BATCH", "5000"))
+# Emit a progress line roughly every this many rows while copying a (large) table.
+PROGRESS_EVERY = int(env("SYNC_PROGRESS_EVERY", "50000"))
 # Timestamp columns we'll watermark on, most-recent-wins. date_created catches INSERTs (new
 # patients) even when the others are NULL.
 CHANGE_COLS = ("date_updated", "date_changed", "date_created")
@@ -75,6 +83,13 @@ def change_expr(scur, table):
         return None
     parts = [f"COALESCE(`{c}`, TIMESTAMP'{EPOCH}')" for c in cols]
     return f"GREATEST({', '.join(parts)})" if len(parts) > 1 else parts[0]
+
+def primary_key_cols(dcur, table):
+    """PK column name(s) of the local table — used to name a row in failure logs."""
+    dcur.execute("""SELECT column_name FROM information_schema.key_column_usage
+                    WHERE table_schema=%s AND table_name=%s AND constraint_name='PRIMARY'
+                    ORDER BY ordinal_position""", (DST_DB, table))
+    return [r[0] for r in dcur.fetchall()]
 
 def ensure_state(dcur):
     dcur.execute(f"CREATE TABLE IF NOT EXISTS `{DST_DB}`.sync_state "
@@ -115,7 +130,7 @@ def sync_table(scur, dcur, table, force_full=False):
     if not has_ts and not REFRESH_STATIC and not force_full:
         dcur.execute(f"SELECT EXISTS(SELECT 1 FROM `{DST_DB}`.`{table}` LIMIT 1)")
         if dcur.fetchone()[0]:
-            return 0, "static (cached)"
+            return 0, 0, "static (cached)"
     since = watermark(dcur, table) if has_ts else EPOCH
     # Incremental only AFTER a baseline full copy and when not reconciling. The first sync is full,
     # so NULL-timestamp rows aren't missed; the reconcile periodically re-copies to catch edits/deletes.
@@ -129,13 +144,39 @@ def sync_table(scur, dcur, table, force_full=False):
     collist = ",".join("`" + c + "`" for c in cols)
     ph = ",".join(["%s"] * len(cols))
     verb = "REPLACE" if incremental else "INSERT"
-    n = 0
+    sql = f"{verb} INTO `{DST_DB}`.`{table}` ({collist}) VALUES ({ph})"
+
+    # name a row by its PK in failure logs (fall back to the first column if there's no PK)
+    pk = primary_key_cols(dcur, table) or cols[:1]
+    pk_idx = [cols.index(c) for c in pk if c in cols]
+    def rowkey(row):
+        return ", ".join(f"{cols[i]}={row[i]!r}" for i in pk_idx) if pk_idx else "?"
+
+    conn = dcur.connection
+    n = failed = logged = 0
     while True:
         rows = scur.fetchmany(BATCH)
         if not rows:
             break
-        dcur.executemany(f"{verb} INTO `{DST_DB}`.`{table}` ({collist}) VALUES ({ph})", rows)
-        n += len(rows)
+        try:
+            dcur.executemany(sql, rows)
+            conn.commit()
+            n += len(rows)
+        except Exception as batch_err:  # noqa: BLE001 — isolate the bad row(s); keep the good ones
+            conn.rollback()
+            log(f"    {table}: batch of {len(rows)} failed ({str(batch_err)[:120]}); isolating rows…")
+            for row in rows:
+                try:
+                    dcur.execute(sql, row)
+                    conn.commit()
+                    n += 1
+                except Exception as row_err:  # noqa: BLE001
+                    conn.rollback()
+                    failed += 1
+                    log(f"    {table}: SKIP row [{rowkey(row)}] — {str(row_err)[:160]}")
+        if n - logged >= PROGRESS_EVERY:
+            logged = n
+            log(f"    {table}: {n} rows copied…")
     # advance the watermark to the latest change time on the source (so next run is incremental)
     if has_ts:
         scur.execute(f"SELECT MAX({expr}) FROM `{table}`")
@@ -144,7 +185,8 @@ def sync_table(scur, dcur, table, force_full=False):
             mstr = m.strftime("%Y-%m-%d %H:%M:%S") if hasattr(m, "strftime") else str(m)
             if mstr > since:
                 advance(dcur, table, mstr)
-    return n, ("reconcile (full)" if force_full else ("incremental" if incremental else "full"))
+    mode = "reconcile (full)" if force_full else ("incremental" if incremental else "full")
+    return n, failed, mode
 
 def main():
     s = pymysql.connect(**SRC)
@@ -156,21 +198,30 @@ def main():
         ensure_state(dcur)
         force_full = due_for_reconcile(dcur)   # decided once so all tables reconcile together
         if force_full:
-            print("sync: full reconcile this cycle (catches edits/deletes)")
-        total = 0
-        for t in source_tables():
+            log("sync: full reconcile this cycle (catches edits/deletes)")
+        tables = source_tables()
+        log(f"sync: {len(tables)} source tables -> {DST['host']}/{DST_DB}")
+        total = bad = 0
+        started = time.monotonic()
+        for t in tables:
+            t0 = time.monotonic()
             try:
-                n, mode = sync_table(scur, dcur, t, force_full)
-                d.commit()
+                n, failed, mode = sync_table(scur, dcur, t, force_full)
+                d.commit()   # commit the watermark advance (rows were committed per batch)
                 total += n
-                print(f"  sync {t}: {n} rows ({mode})")
+                bad += failed
+                secs = round(time.monotonic() - t0, 1)
+                extra = f", {failed} row(s) SKIPPED" if failed else ""
+                log(f"  sync {t}: {n} rows ({mode}) in {secs}s{extra}")
             except Exception as e:  # noqa: BLE001 — keep syncing the rest; surface the failure
                 d.rollback()
-                print(f"  sync {t}: FAILED ({e})")
+                log(f"  sync {t}: FAILED — {str(e)[:200]}")
         if force_full:
             mark_reconcile(dcur)
             d.commit()
-        print(f"sync done: {total} rows across source tables")
+        elapsed = round(time.monotonic() - started, 1)
+        verdict = f"{total} rows across {len(tables)} tables in {elapsed}s"
+        log(f"sync done: {verdict}" + (f" — {bad} row(s) skipped (see SKIP lines above)" if bad else ""))
 
 if __name__ == "__main__":
     main()
