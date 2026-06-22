@@ -1,6 +1,8 @@
 # sedish-fhir-pipeline
 
-[![Build & Test](https://github.com/mherman22/sedish-fhir-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/mherman22/sedish-fhir-pipeline/actions/workflows/ci.yml)
+[![Build & Test](https://github.com/DIGI-UW/sedish-fhir-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/DIGI-UW/sedish-fhir-pipeline/actions/workflows/ci.yml)
+
+[![Publish image](https://github.com/DIGI-UW/sedish-fhir-pipeline/actions/workflows/publish.yml/badge.svg)](https://github.com/DIGI-UW/sedish-fhir-pipeline/actions/workflows/publish.yml)
 
 FHIR R4 transformation and load pipeline for the **SEDISH Haiti Health Information Exchange**.
 Reads patient demographics and clinical data from the CHARESS consolidated OpenMRS database,
