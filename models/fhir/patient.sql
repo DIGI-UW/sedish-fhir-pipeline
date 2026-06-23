@@ -18,27 +18,20 @@ MODEL (
   )
 );
 
-/*
-  consolidated_db identity rows -> FHIR Patient — shaped to match the OpenMRS fhir2
-  PatientTranslator so the SHR sees the same structure the EMRs produce:
-    * identifier: element id (uuid), use, type.text (from fhir.identifier_systems label), system, value
-    * name/address: element id (uuid); address detail in the fhir.openmrs.org/ext/address extension
-    * deceasedBoolean / deceasedDateTime from person.dead / death_date
-    * birthDate is year-only when birthdate_estimated
-  NOT yet matched (need source we don't capture): the contained Provenance (creator ->
-  Practitioner) — patient_isanteplus.creator is a varchar name, not a UUID; no OpenMRS
-  users table in consolidated_db.
-
-  Incremental: merged by uuid; changed_at = latest consolidated-server write across the
-  patient's demographic tables.
-*/
 WITH names AS (
   SELECT mspp_code, person_id,
-         JSON_ARRAYAGG(JSON_OBJECT(
-           'id', uuid,
-           'use', CASE WHEN preferred = 1 THEN 'official' ELSE 'usual' END,
-           'family', family_name,
-           'given', JSON_ARRAY(given_name))) AS arr,
+         JSON_ARRAYAGG(
+           JSON_MERGE_PATCH(
+             JSON_OBJECT(
+               'id',     uuid,
+               'use',    CASE WHEN preferred = 1 THEN 'official' ELSE 'usual' END,
+               'family', family_name,
+               'given',  CASE WHEN middle_name IS NOT NULL AND middle_name <> ''
+                              THEN JSON_ARRAY(given_name, middle_name)
+                              ELSE JSON_ARRAY(given_name) END),
+             JSON_OBJECT(
+               'prefix', CASE WHEN prefix IS NOT NULL AND prefix <> ''
+                              THEN JSON_ARRAY(prefix) ELSE NULL END))) AS arr,
          MAX(COALESCE(date_updated, date_created)) AS chg
   FROM consolidated_db.person_name_openmrs
   WHERE COALESCE(voided, 0) = 0
@@ -46,18 +39,23 @@ WITH names AS (
 ),
 addresses AS (
   SELECT mspp_code, person_id,
-         JSON_ARRAYAGG(JSON_OBJECT(
-           'id', uuid,
-           'extension', JSON_ARRAY(JSON_OBJECT(
-             'url', 'http://fhir.openmrs.org/ext/address',
-             'extension', JSON_ARRAY(
-               JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address1', 'valueString', address1),
-               JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address2', 'valueString', address2),
-               JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address3', 'valueString', address3)))),
-           'use', 'home',
-           'city', city_village,
-           'state', state_province,
-           'country', country)) AS arr,
+         JSON_ARRAYAGG(
+           JSON_MERGE_PATCH(
+             JSON_OBJECT(
+               'id', uuid,
+               'extension', JSON_ARRAY(JSON_OBJECT(
+                 'url', 'http://fhir.openmrs.org/ext/address',
+                 'extension', JSON_ARRAY(
+                   JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address1', 'valueString', address1),
+                   JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address2', 'valueString', address2),
+                   JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address3', 'valueString', address3)))),
+               'use',   'home',
+               'city',  city_village,
+               'state', state_province,
+               'country', country),
+             JSON_OBJECT(
+               'district',   county_district,
+               'postalCode', postal_code))) AS arr,
          MAX(COALESCE(date_updated, date_created)) AS chg
   FROM consolidated_db.person_address_openmrs
   WHERE COALESCE(voided, 0) = 0
@@ -65,7 +63,6 @@ addresses AS (
 ),
 idents AS (
   SELECT pi.mspp_code, pi.patient_id,
-         -- Add #location extension when we can resolve the location; omit cleanly otherwise.
          JSON_MERGE_PATCH(
            JSON_OBJECT(
              'id', pi.uuid,
