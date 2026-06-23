@@ -23,8 +23,15 @@ default_gateway: mysql
 model_defaults:
   dialect: mysql
 
-# FHIR system URIs — must align with OpenCR config; provided by CHARESS.
+# FHIR system URIs and source identifiers.
+# These must align with the OpenCR decisionRules.json system URIs and with
+# whatever identifier namespaces the source iSantePlus instance publishes.
+# Override per deployment — do not edit the SQL models.
 variables:
   national_id_system: http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code
+  source_key_system: http://sedish-haiti.org/fhir/source-key
+  mspp_site_system: http://sedish-haiti.org/fhir/mspp-site
+  drug_system: http://isanteplus.org/openmrs/drug
+  phone_attribute_name: "Telephone Number"
 
 disable_anonymized_analytics: true

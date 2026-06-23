@@ -35,7 +35,7 @@ SELECT
         'resourceType', 'Observation',
         'id', o.uuid,
         'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-                  'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', o.mspp_code))),
+                  'system', @VAR('mspp_site_system', 'http://sedish-haiti.org/fhir/mspp-site'), 'code', o.mspp_code))),
         'status', 'final',
         -- category (US Core / IPS expect it; FHIR "Preferred" binding). Derived from the OpenMRS
         -- concept class_id (standard concept-class seed): Test/LabSet -> laboratory, Procedure ->
@@ -74,7 +74,7 @@ SELECT
         WHEN o.value_text     IS NOT NULL THEN JSON_OBJECT('valueString', o.value_text)
         WHEN o.value_drug     IS NOT NULL THEN JSON_OBJECT('valueCodeableConcept',
                                                JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
-                                                 'system', 'http://openmrs.org/drugs',
+                                                 'system', @VAR('drug_system', 'http://openmrs.org/drugs'),
                                                  'code',   CAST(o.value_drug AS CHAR)))))
         ELSE JSON_OBJECT()
       END

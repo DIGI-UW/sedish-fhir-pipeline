@@ -37,7 +37,7 @@ SELECT
       'id', CONCAT('cond-', MD5(CONCAT_WS('|', pd.mspp_code, pd.encounter_id, pd.location_id,
               pd.concept_group, pd.concept_id, pd.answer_concept_id, pd.encounter_date))),
       'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-                'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', pd.mspp_code))),
+                'system', @VAR('mspp_site_system', 'http://sedish-haiti.org/fhir/mspp-site'), 'code', pd.mspp_code))),
       'clinicalStatus', JSON_OBJECT(
                 'coding', JSON_ARRAY(JSON_OBJECT(
                   'system', 'http://terminology.hl7.org/CodeSystem/condition-clinical',

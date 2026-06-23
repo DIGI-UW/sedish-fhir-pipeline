@@ -28,6 +28,13 @@ set -eu
 : "${FHIR_TEST_DB:=fhir_test}"   # set empty to omit the test gateway (production)
 : "${ENSURE_DBS:=1}"             # set 0 when the schemas are pre-created and we lack CREATE
 
+# FHIR system URIs — override to adapt to a different source system or country deployment.
+: "${NATIONAL_ID_SYSTEM:=http://isanteplus.org/openmrs/fhir2/6-biometrics-national-reference-code}"
+: "${SOURCE_KEY_SYSTEM:=http://sedish-haiti.org/fhir/source-key}"
+: "${MSPP_SITE_SYSTEM:=http://sedish-haiti.org/fhir/mspp-site}"
+: "${DRUG_SYSTEM:=http://isanteplus.org/openmrs/drug}"
+: "${PHONE_ATTRIBUTE_NAME:=Telephone Number}"
+
 MODE=$([ -n "${SRC_HOST:-}" ] && echo SYNC || echo DIRECT)
 log() { echo "entrypoint[$MODE]: $*"; }
 
@@ -46,6 +53,12 @@ gateways:
 default_gateway: mysql
 model_defaults: {dialect: mysql}
 disable_anonymized_analytics: true
+variables:
+  national_id_system: $NATIONAL_ID_SYSTEM
+  source_key_system: $SOURCE_KEY_SYSTEM
+  mspp_site_system: $MSPP_SITE_SYSTEM
+  drug_system: $DRUG_SYSTEM
+  phone_attribute_name: "$PHONE_ATTRIBUTE_NAME"
 YAML
 
 # ── Wait for the database, optionally creating the schemas ───────────────────

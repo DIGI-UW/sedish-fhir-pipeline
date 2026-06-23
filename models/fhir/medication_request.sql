@@ -33,13 +33,13 @@ SELECT
     'resourceType', 'MedicationRequest',
     'id', CONCAT('medreq-', MD5(CONCAT_WS('|', pp.mspp_code, pp.encounter_id, pp.location_id, pp.drug_id))),
     'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-              'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', pp.mspp_code))),
+              'system', @VAR('mspp_site_system', 'http://sedish-haiti.org/fhir/mspp-site'), 'code', pp.mspp_code))),
     'status', 'active',
     'intent', 'order',
     'subject', JSON_OBJECT('reference', CONCAT('Patient/', per.uuid), 'type', 'Patient'),
     'authoredOn', REPLACE(CAST(COALESCE(pp.visit_date, pp.dispensation_date) AS CHAR), ' ', 'T'),
     'medicationCodeableConcept', JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
-              'system', 'http://isanteplus.org/openmrs/drug', 'code', CAST(pp.drug_id AS CHAR)))),
+              'system', @VAR('drug_system', 'http://isanteplus.org/openmrs/drug'), 'code', CAST(pp.drug_id AS CHAR)))),
     'dosageInstruction', JSON_ARRAY(JSON_OBJECT(
               'text', pp.posology,
               'timing', JSON_OBJECT('repeat', JSON_OBJECT('boundsDuration', JSON_OBJECT(

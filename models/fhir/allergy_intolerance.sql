@@ -51,7 +51,7 @@ SELECT
       'resourceType', 'AllergyIntolerance',
       'id', a.uuid,
       'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-                'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', a.mspp_code))),
+                'system', @VAR('mspp_site_system', 'http://sedish-haiti.org/fhir/mspp-site'), 'code', a.mspp_code))),
       'type', 'allergy',
       'clinicalStatus', JSON_OBJECT(
                 'coding', JSON_ARRAY(JSON_OBJECT(

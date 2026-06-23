@@ -157,7 +157,7 @@ SELECT
       'id', per.uuid,
       -- facility provenance: originating site (mspp_code).
       'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-                'system', 'http://sedish-haiti.org/fhir/mspp-site', 'code', pt.mspp_code))),
+                'system', @VAR('mspp_site_system', 'http://sedish-haiti.org/fhir/mspp-site'), 'code', pt.mspp_code))),
       'active', CAST(IF(COALESCE(per.voided, 0) = 0, 'true', 'false') AS JSON),
       'gender', CASE
                   WHEN per.gender IN ('M', 'Male') THEN 'male'
