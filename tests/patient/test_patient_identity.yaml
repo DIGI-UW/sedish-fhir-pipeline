@@ -33,6 +33,11 @@ test_patient_with_national_id:
       rows: |
         patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
         1,11,11106,ST00160,3,1,0
+    consolidated_db.locations:
+      format: csv
+      columns: {location_id: int, value_reference: varchar(10), name: varchar(100)}
+      rows: |
+        location_id,value_reference,name
     consolidated_db.national_fingerprint_mapping:
       format: csv
       columns: {mspp_code: varchar(20), patient_id: int, updated_at: datetime, created_at: datetime}
@@ -104,6 +109,11 @@ test_patient_arevoir_no_national_id:
       rows: |
         patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
         2,99,11202,PV00442,3,1,0
+    consolidated_db.locations:
+      format: csv
+      columns: {location_id: int, value_reference: varchar(10), name: varchar(100)}
+      rows: |
+        location_id,value_reference,name
     # A_REVOIR statut with updated_at — fp_chg CTE picks this up for changed_at tracking
     # even though idents CTE filters it out (no national FP ID emitted).
     consolidated_db.national_fingerprint_mapping:
