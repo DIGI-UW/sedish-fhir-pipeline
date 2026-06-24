@@ -16,13 +16,6 @@ MODEL (
   audits (assert_observation_has_subject)
 );
 
-/*
-  obs_openmrs -> FHIR Observation. code via concept_name (CIEL codings would be
-  added once concept_reference_* is confirmed present). value[x] and the optional
-  encounter reference are merged in conditionally (JSON_MERGE_PATCH).
-  Merged by uuid; `changed_at` = the obs's consolidated-server write time;
-  `patient_fhir_id` lets the loader attach this to its patient's bundle.
-*/
 SELECT
   o.mspp_code,
   o.obs_id,
@@ -58,7 +51,8 @@ SELECT
                               'display', cn.name)),
                   'text', cn.name),
         'subject', JSON_OBJECT('reference', CONCAT('Patient/', per.uuid), 'type', 'Patient'),
-        'effectiveDateTime', REPLACE(CAST(o.obs_datetime AS CHAR),' ','T')
+        'effectiveDateTime', REPLACE(CAST(o.obs_datetime AS CHAR),' ','T'),
+        'issued', REPLACE(CAST(o.date_created AS CHAR),' ','T')
       ),
       CASE
         WHEN o.value_numeric  IS NOT NULL THEN JSON_OBJECT('valueQuantity',
@@ -69,7 +63,8 @@ SELECT
                                                       ELSE JSON_OBJECT() END))
         WHEN o.value_coded    IS NOT NULL THEN JSON_OBJECT('valueCodeableConcept',
                                                JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
-                                                 'code', COALESCE(vc.uuid, RPAD(CAST(o.value_coded AS CHAR), 36, 'A'))))))
+                                                 'code', COALESCE(vc.uuid, RPAD(CAST(o.value_coded AS CHAR), 36, 'A')),
+                                                 'display', vcn.name))))
         WHEN o.value_datetime IS NOT NULL THEN JSON_OBJECT('valueDateTime', REPLACE(CAST(o.value_datetime AS CHAR),' ','T'))
         WHEN o.value_text     IS NOT NULL THEN JSON_OBJECT('valueString', o.value_text)
         WHEN o.value_drug     IS NOT NULL THEN JSON_OBJECT('valueCodeableConcept',
@@ -90,12 +85,18 @@ LEFT JOIN consolidated_db.encounter_openmrs enc
   ON enc.mspp_code = o.mspp_code AND enc.encounter_id = o.encounter_id
 LEFT JOIN consolidated_db.concept qc ON qc.concept_id = o.concept_id
 LEFT JOIN consolidated_db.concept vc ON vc.concept_id = o.value_coded
--- one preferred name per concept (a concept can have a preferred name per locale, which would
--- otherwise fan the row out N times); prefer English, else any preferred name.
+-- preferred name for the obs question concept (code.coding.display)
 LEFT JOIN (
   SELECT concept_id, COALESCE(MAX(CASE WHEN locale = 'en' THEN name END), MAX(name)) AS name
   FROM consolidated_db.concept_name
   WHERE locale_preferred = 1 AND COALESCE(voided, 0) = 0
   GROUP BY concept_id
 ) cn ON cn.concept_id = o.concept_id
+-- preferred name for the coded answer concept (valueCodeableConcept.coding.display)
+LEFT JOIN (
+  SELECT concept_id, COALESCE(MAX(CASE WHEN locale = 'en' THEN name END), MAX(name)) AS name
+  FROM consolidated_db.concept_name
+  WHERE locale_preferred = 1 AND COALESCE(voided, 0) = 0
+  GROUP BY concept_id
+) vcn ON vcn.concept_id = o.value_coded
 WHERE COALESCE(o.voided, 0) = 0
