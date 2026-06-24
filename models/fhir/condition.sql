@@ -16,14 +16,6 @@ MODEL (
   audits (not_null(columns := (mspp_code, fhir_id)))
 );
 
-/*
-  patient_diagnosis (iSantePlus DERIVED) -> FHIR Condition. This table is pre-filtered
-  to diagnoses but has NO uuid, so the resource id is a deterministic synthetic key over
-  (mspp_code, patient_id, encounter, obs_group, diagnosis concept). code = answer_concept_id
-  (the coded diagnosis) via concept_name; optional encounter ref via JSON_MERGE_PATCH.
-  verificationStatus/severity are intentionally omitted (suspected_confirmed/primary_secondary
-  are concept ids we can't resolve without the CIEL dictionary).
-*/
 SELECT
   pd.mspp_code,
   pd.patient_id,
@@ -43,6 +35,11 @@ SELECT
                   'system', 'http://terminology.hl7.org/CodeSystem/condition-clinical',
                   'code', 'active', 'display', 'Active')),
                 'text', 'Active'),
+      'verificationStatus', JSON_OBJECT(
+                'coding', JSON_ARRAY(JSON_OBJECT(
+                  'system', 'http://terminology.hl7.org/CodeSystem/condition-ver-status',
+                  'code', 'confirmed', 'display', 'Confirmed')),
+                'text', 'Confirmed'),
       'category', JSON_ARRAY(JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
                 'system', 'http://terminology.hl7.org/CodeSystem/condition-category',
                 'code', 'encounter-diagnosis', 'display', 'Encounter Diagnosis')))),
