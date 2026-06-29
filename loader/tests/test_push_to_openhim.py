@@ -1,10 +1,13 @@
 """Aggressive unit tests for the loader — no DB, no network (pymysql + urllib faked).
 
-These assert *exact* structures, call sequences, URLs, headers, request bodies,
-watermark-advance values, commit behaviour, ordering and the skip path — so any
-behavioural drift breaks a test.
+These assert *exact* structures, call sequences, URLs, headers, request bodies, per-entry
+pushed-state, commit behaviour, ordering and the skip path — so any behavioural drift breaks a
+test. The loader detects change PER ENTRY: it remembers the changed_at it last pushed for each
+fhir_id (the `pushed` table) and re-pushes a row whenever its changed_at moves past that — new,
+updated, or out-of-order.
 """
 import base64
+import collections
 import datetime as dt
 import io
 import json
@@ -53,28 +56,6 @@ def test_build_bundle_order_preserved():
 def test_build_bundle_single_entry():
     b = L.build_bundle([{"resourceType": "Patient", "id": "p1"}])
     assert len(b["entry"]) == 1 and b["entry"][0]["request"]["url"] == "Patient/p1"
-
-
-def test_index_clinical_groups_order_and_parses():
-    encs = [("e1", "pA", json.dumps({"resourceType": "Encounter", "id": "e1"}), DT0)]
-    obs = [("o1", "pA", json.dumps({"resourceType": "Observation", "id": "o1"}), DT0),
-           ("o2", "pB", json.dumps({"resourceType": "Observation", "id": "o2"}), DT0)]
-    g = L.index_clinical(encs, obs)
-    assert set(g) == {"pA", "pB"}
-    # encounters indexed before observations for the same patient (group-arg order)
-    assert [r["id"] for r in g["pA"]] == ["e1", "o1"]
-    assert g["pB"] == [{"resourceType": "Observation", "id": "o2"}]
-
-
-def test_index_clinical_empty():
-    assert L.index_clinical([], []) == {}
-
-
-def test_latest_changed_returns_true_max_regardless_of_order():
-    rows = [("a", "x", DT1), ("b", "y", DT2), ("c", "z", DT0)]
-    assert L.latest_changed(rows) == DT2
-    assert L.latest_changed([("a", "x", DT0)]) == DT0
-    assert L.latest_changed([]) is None
 
 
 # ======================================================================
@@ -160,36 +141,48 @@ def test_send_retries_transient_exception_then_returns_exc(monkeypatch):
 # main() against a fake DB + fake transport
 # ======================================================================
 class FakeCursor:
+    """Simulates the fhir.* tables + the per-entry `pushed` table. `data`:
+        fhir:    {view: [rows]}  patient rows = (fhir_id, resource_json, changed_at);
+                                 clinical rows = (fhir_id, patient_fhir_id, resource_json, changed_at)
+        patients:{fhir_id: resource_json}            (fetch_patients reference-target lookup)
+        pushed:  {(resource_type, fhir_id): changed_at}   (pre-existing pushed state; optional)
+        globals: {view: [(fhir_id, resource_json)]}
+    The `pending` SELECT (LEFT JOIN pushed) returns rows not yet pushed or whose changed_at moved;
+    INSERT ... pushed updates the in-memory pushed map so the offset-0 re-read loop terminates."""
     def __init__(self, data):
         self.data, self._result, self.executed = data, [], []
+        self.pushed = dict(data.get("pushed", {}))
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
         s = sql.lower()
-        if "from loader_state.loader_state" in s:
-            row = self.data["watermark"].get(params[0])
-            self._result = [(row,)] if row else []
-        elif "from fhir.patient where fhir_id in" in s:
+        params = params or ()
+        if "left join" in s and "pushed" in s and "from fhir." in s:       # pending / pending_page
+            view = s.split("from fhir.", 1)[1].split()[0]
+            rtype = params[0]
+            rows = self.data.get("fhir", {}).get(view, [])
+            res = [r for r in rows
+                   if (rtype, r[0]) not in self.pushed or r[-1] > self.pushed[(rtype, r[0])]]
+            if "limit" in s:                                                # pending_page
+                limit, offset = int(params[1]), int(params[2])
+                res = sorted(res, key=lambda r: r[0])[offset:offset + limit]
+            self._result = res
+        elif "insert into" in s and "pushed" in s:                         # mark_pushed upsert
+            for i in range(0, len(params), 3):
+                self.pushed[(params[i], params[i + 1])] = params[i + 2]
+            self._result = []
+        elif "from fhir.patient where fhir_id in" in s:                    # fetch_patients
             self._result = [(fid, self.data["patients"][fid]) for fid in params
                             if fid in self.data["patients"]]
-        elif "where patient_fhir_id in" in s and "from fhir." in s:   # fetch_clinical by patient key
+        elif "where patient_fhir_id in" in s and "from fhir." in s:        # fetch_clinical
             view = s.split("from fhir.", 1)[1].split()[0]
-            rows = self.data["delta"].get(view, [])
+            rows = self.data.get("fhir", {}).get(view, [])
             self._result = [(pid, res) for (_fid, pid, res, _chg) in rows if pid in params]
-        elif "where changed_at" in s and "from fhir." in s:
-            view = s.split("from fhir.", 1)[1].split()[0]   # patient / encounter / observation / …
-            all_rows = self.data["delta"].get(view, [])
-            if "limit" in s and params and len(params) >= 3:
-                # delta_page(since, limit, offset) — slice to simulate pagination
-                limit, offset = int(params[1]), int(params[2])
-                self._result = all_rows[offset:offset + limit]
-            else:
-                self._result = all_rows
-        elif "from fhir." in s and "where" not in s:        # global full read (push_globals)
+        elif "from fhir." in s and "where" not in s:                       # globals full read
             view = s.split("from fhir.", 1)[1].split()[0]
             self._result = self.data.get("globals", {}).get(view, [])
-        else:
+        else:                                                              # CREATE DATABASE/TABLE, etc.
             self._result = []
     def fetchone(self): return self._result[0] if self._result else None
     def fetchall(self): return list(self._result)
@@ -219,9 +212,15 @@ def _run_main(monkeypatch, data, dry_run=False, send_result="200",
     return sent, conn, cur
 
 
-def _advances(cur):
-    """{resource_type: timestamp} from the INSERT ... loader_state statements main issued."""
-    return {p[0]: p[1] for sql, p in cur.executed if "insert into loader_state" in sql.lower()}
+def _marked(cur):
+    """{resource_type: {fhir_id: changed_at}} from the INSERT ... pushed statements main issued."""
+    out = collections.defaultdict(dict)
+    for sql, params in cur.executed:
+        s = sql.lower()
+        if "insert into" in s and "pushed" in s and params:
+            for i in range(0, len(params), 3):
+                out[params[i]][params[i + 1]] = params[i + 2]
+    return dict(out)
 
 
 def _pat(uuid): return json.dumps({"resourceType": "Patient", "id": uuid})
@@ -229,7 +228,7 @@ def _enc(uuid): return json.dumps({"resourceType": "Encounter", "id": uuid})
 def _obs(uuid): return json.dumps({"resourceType": "Observation", "id": uuid})
 
 
-# patient delta rows are 3-tuples: (fhir_id, resource_json, changed_at)
+# patient fhir rows are 3-tuples: (fhir_id, resource_json, changed_at)
 def _pat_row(fhir_id, changed): return (fhir_id, _pat(fhir_id), changed)
 
 
@@ -245,63 +244,75 @@ def _bundle_ids(body):
 # Identity: changed patients -> bundle POSTed to the mediator
 # ======================================================================
 def test_identity_posts_patient_bundle_to_mediator(monkeypatch):
-    data = {"watermark": {}, "patients": {},
-            "delta": {"patient": [_pat_row("pA", DT1)]}}
+    data = {"patients": {}, "fhir": {"patient": [_pat_row("pA", DT1)]}}
     sent, conn, cur = _run_main(monkeypatch, data, clinical_views=[], global_views=[])
     # one POST to the mediator, authed as the OpenHIM client; bundle carries just the patient
     assert [(m, u) for m, u, _, _ in sent] == [("POST", L.MEDIATOR_URL)]
     assert sent[0][2] == L.OPENHIM
     assert _bundle_ids(sent[0][3]) == ["Patient/pA"]
-    assert _advances(cur) == {"patient": DT1}
+    assert _marked(cur) == {"patient": {"pA": DT1}}
     assert conn.committed is True
 
 
 def test_identity_pages_into_one_bundle_ordered_by_fhir_id(monkeypatch):
-    data = {"watermark": {}, "patients": {},
-            "delta": {"patient": [_pat_row("pB", DT1), _pat_row("pA", DT2)]}}
+    data = {"patients": {}, "fhir": {"patient": [_pat_row("pB", DT1), _pat_row("pA", DT2)]}}
     sent, _, cur = _run_main(monkeypatch, data, clinical_views=[], global_views=[])
     assert _bundle_ids(sent[0][3]) == ["Patient/pA", "Patient/pB"]   # sorted by fhir_id
-    assert _advances(cur) == {"patient": DT2}        # max changed_at across the page
+    assert _marked(cur) == {"patient": {"pA": DT2, "pB": DT1}}       # each marked at its own changed_at
 
 
-def test_identity_holds_watermark_on_failure(monkeypatch):
-    data = {"watermark": {}, "patients": {}, "delta": {"patient": [_pat_row("pA", DT1)]}}
+def test_identity_repushes_an_updated_patient_below_the_high_water(monkeypatch):
+    # THE update case. pA was pushed at DT1; pB (newer) pushed at DT2. pA is then EDITED so its
+    # changed_at becomes DT1b — still < DT2, so a single global high-water mark would skip it.
+    # Per-entry detection re-pushes pA because DT1b > pA's own last-pushed DT1; pB is untouched.
+    DT1b = dt.datetime(2026, 2, 15)
+    data = {"patients": {},
+            "pushed": {("patient", "pA"): DT1, ("patient", "pB"): DT2},
+            "fhir": {"patient": [("pA", _pat("pA"), DT1b), ("pB", _pat("pB"), DT2)]}}
+    sent, conn, cur = _run_main(monkeypatch, data, clinical_views=[], global_views=[])
+    assert _bundle_ids(sent[0][3]) == ["Patient/pA"]                 # only the edited one
+    assert _marked(cur) == {"patient": {"pA": DT1b}}
+    assert conn.committed is True
+
+
+def test_identity_holds_state_on_failure(monkeypatch):
+    data = {"patients": {}, "fhir": {"patient": [_pat_row("pA", DT1)]}}
     sent, conn, cur = _run_main(monkeypatch, data, send_result="ERR 500: []",
                                 clinical_views=[], global_views=[])
     assert sent                          # it attempted the POST
-    assert _advances(cur) == {}          # but advanced nothing
-    assert conn.committed is False       # and did not commit (delta retried next cycle)
+    assert _marked(cur) == {}            # but marked nothing
+    assert conn.committed is False       # and did not commit (row retried next cycle)
 
 
-def test_identity_dry_run_posts_but_does_not_advance(monkeypatch):
-    data = {"watermark": {}, "patients": {}, "delta": {"patient": [_pat_row("pA", DT1)]}}
+def test_identity_dry_run_posts_but_does_not_mark(monkeypatch):
+    data = {"patients": {}, "fhir": {"patient": [_pat_row("pA", DT1)]}}
     sent, conn, cur = _run_main(monkeypatch, data, dry_run=True, clinical_views=[], global_views=[])
     assert [(m, u) for m, u, _, _ in sent] == [("POST", L.MEDIATOR_URL)]
-    assert _advances(cur) == {} and conn.committed is False
+    assert _marked(cur) == {} and conn.committed is False
 
 
 def test_identity_only_when_clinical_views_empty(monkeypatch):
-    # CLINICAL_VIEWS empty => identity-only: clinical deltas are never even queried.
-    data = {"watermark": {}, "patients": {},
-            "delta": {"patient": [_pat_row("pA", DT1)],
-                      "encounter": [("e1", "pA", _enc("e1"), DT2)]}}
+    # CLINICAL_VIEWS empty => identity-only: clinical views are never even queried.
+    data = {"patients": {},
+            "fhir": {"patient": [_pat_row("pA", DT1)],
+                     "encounter": [("e1", "pA", _enc("e1"), DT2)]}}
     sent, _, cur = _run_main(monkeypatch, data, clinical_views=[], global_views=[])
     assert [(m, u) for m, u, _, _ in sent] == [("POST", L.MEDIATOR_URL)]
-    delta_sqls = [s for s, _ in cur.executed if "where changed_at" in s.lower()]
-    assert len(delta_sqls) == 1                      # patient only — clinical views never queried
-    assert "from fhir.patient" in delta_sqls[0].lower()
+    pend = [s for s, _ in cur.executed if "left join" in s.lower() and "pushed" in s.lower()]
+    assert len(pend) == 1                            # patient only — clinical views never queried
+    assert "from fhir.patient" in pend[0].lower()
 
 
 # ======================================================================
 # Clinical: changed clinical grouped per patient -> bundle(patient + clinical) POSTed to mediator
 # ======================================================================
 def test_clinical_bundles_changed_clinical_per_patient(monkeypatch):
-    # no patient delta: the patient is fetched by id purely as the bundle's reference target
-    data = {"watermark": {"encounter": DT0, "observation": DT0},
-            "patients": {"pA": _pat("pA")},
-            "delta": {"patient": [],
-                      "encounter": [("e1", "pA", _enc("e1"), DT1)],
-                      "observation": [("o1", "pA", _obs("o1"), DT2)]}}
+    # no patient change: the patient is fetched by id purely as the bundle's reference target
+    data = {"patients": {"pA": _pat("pA")},
+            "pushed": {("patient", "pA"): DT2},      # patient unchanged -> not re-pushed by identity
+            "fhir": {"patient": [("pA", _pat("pA"), DT2)],
+                     "encounter": [("e1", "pA", _enc("e1"), DT1)],
+                     "observation": [("o1", "pA", _obs("o1"), DT2)]}}
     sent, conn, cur = _run_main(monkeypatch, data,
                                 clinical_views=["encounter", "observation"], global_views=[])
     # one POST to the mediator; patient first, then its clinical (mediator does the CR/SHR split)
@@ -309,53 +320,59 @@ def test_clinical_bundles_changed_clinical_per_patient(monkeypatch):
     assert sent[0][2] == L.OPENHIM
     assert _bundle_ids(sent[0][3]) == ["Patient/pA", "Encounter/e1", "Observation/o1"]
     assert any("from fhir.patient where fhir_id in" in s.lower() for s, _ in cur.executed)
-    assert _advances(cur) == {"encounter": DT1, "observation": DT2}
+    assert _marked(cur) == {"encounter": {"e1": DT1}, "observation": {"o1": DT2}}
     assert conn.committed is True
 
 
 def test_clinical_only_bundles_patients_whose_clinical_changed(monkeypatch):
-    # obs changed for pA only; pB unchanged -> only pA is bundled
-    data = {"watermark": {"observation": DT0},
-            "patients": {"pA": _pat("pA"), "pB": _pat("pB")},
-            "delta": {"observation": [("o9", "pA", _obs("o9"), DT2)]}}
+    # obs changed for pA only; pB's obs already pushed -> only pA is bundled
+    data = {"patients": {"pA": _pat("pA"), "pB": _pat("pB")},
+            "pushed": {("observation", "o8"): DT2},
+            "fhir": {"observation": [("o9", "pA", _obs("o9"), DT2), ("o8", "pB", _obs("o8"), DT2)]}}
     sent, _, cur = _run_main(monkeypatch, data, clinical_views=["observation"], global_views=[])
     assert [(m, u) for m, u, _, _ in sent] == [("POST", L.MEDIATOR_URL)]
     assert set(_bundle_ids(sent[0][3])) == {"Patient/pA", "Observation/o9"}
-    assert _advances(cur) == {"observation": DT2}
+    assert _marked(cur) == {"observation": {"o9": DT2}}
+
+
+def test_clinical_repushes_an_edited_observation(monkeypatch):
+    # o1 was pushed at DT1; it is edited (changed_at -> DT2) -> re-pushed with its patient.
+    data = {"patients": {"pA": _pat("pA")},
+            "pushed": {("observation", "o1"): DT1},
+            "fhir": {"observation": [("o1", "pA", _obs("o1"), DT2)]}}
+    sent, _, cur = _run_main(monkeypatch, data, clinical_views=["observation"], global_views=[])
+    assert set(_bundle_ids(sent[0][3])) == {"Patient/pA", "Observation/o1"}
+    assert _marked(cur) == {"observation": {"o1": DT2}}
 
 
 def test_clinical_pushes_a_new_view_allergy(monkeypatch):
-    # an AllergyIntolerance changed for an existing patient -> bundled + posted, like enc/obs
     allergy = json.dumps({"resourceType": "AllergyIntolerance", "id": "al1"})
-    data = {"watermark": {"allergy_intolerance": DT0},
-            "patients": {"pA": _pat("pA")},
-            "delta": {"allergy_intolerance": [("al1", "pA", allergy, DT2)]}}
+    data = {"patients": {"pA": _pat("pA")},
+            "fhir": {"allergy_intolerance": [("al1", "pA", allergy, DT2)]}}
     sent, _, cur = _run_main(monkeypatch, data,
                              clinical_views=["allergy_intolerance"], global_views=[])
     assert [(m, u) for m, u, _, _ in sent] == [("POST", L.MEDIATOR_URL)]
     assert set(_bundle_ids(sent[0][3])) == {"Patient/pA", "AllergyIntolerance/al1"}
-    assert _advances(cur) == {"allergy_intolerance": DT2}
+    assert _marked(cur) == {"allergy_intolerance": {"al1": DT2}}
 
 
-def test_clinical_skips_patient_with_no_row(monkeypatch):
-    # obs for pX, but pX has no Patient row anywhere -> no push for it
-    data = {"watermark": {"observation": DT0}, "patients": {},
-            "delta": {"observation": [("oX", "pX", _obs("oX"), DT2)]}}
+def test_clinical_skips_patient_with_no_row_but_marks_it(monkeypatch):
+    # obs for pX, but pX has no Patient row -> not pushable; its clinical is marked pushed so it is
+    # NOT retried forever (a later real change advances changed_at and re-triggers it).
+    data = {"patients": {}, "fhir": {"observation": [("oX", "pX", _obs("oX"), DT2)]}}
     sent, conn, cur = _run_main(monkeypatch, data, clinical_views=["observation"], global_views=[])
     assert sent == []                    # nothing posted (can't bundle a patient we don't have)
-    # intended: a skipped (voided/absent) patient's clinical watermark still advances,
-    # so it is NOT retried forever (consolidated_db creates person before obs, FK order).
-    assert _advances(cur) == {"observation": DT2}
+    assert _marked(cur) == {"observation": {"oX": DT2}}
     assert conn.committed is True
 
 
-def test_clinical_holds_watermark_on_failure(monkeypatch):
-    data = {"watermark": {"observation": DT0}, "patients": {"pA": _pat("pA")},
-            "delta": {"observation": [("o1", "pA", _obs("o1"), DT2)]}}
+def test_clinical_holds_state_on_failure(monkeypatch):
+    data = {"patients": {"pA": _pat("pA")},
+            "fhir": {"observation": [("o1", "pA", _obs("o1"), DT2)]}}
     sent, conn, cur = _run_main(monkeypatch, data, send_result="ERR 500: []",
                                 clinical_views=["observation"], global_views=[])
     assert sent                          # it attempted the POST
-    assert _advances(cur) == {}          # but advanced nothing
+    assert _marked(cur) == {}            # but marked nothing
     assert conn.committed is False
 
 
@@ -363,38 +380,40 @@ def test_clinical_holds_watermark_on_failure(monkeypatch):
 # A full cycle: identity + clinical + globals, all POSTed to the mediator
 # ======================================================================
 def test_identity_and_clinical_both_post_in_one_run(monkeypatch):
-    data = {"watermark": {},
-            "patients": {"pA": _pat("pA")},
-            "delta": {"patient": [_pat_row("pA", DT1)],
-                      "encounter": [("e1", "pA", _enc("e1"), DT1)],
-                      "observation": [("o1", "pA", _obs("o1"), DT2)]}}
+    data = {"patients": {"pA": _pat("pA")},
+            "fhir": {"patient": [_pat_row("pA", DT1)],
+                     "encounter": [("e1", "pA", _enc("e1"), DT1)],
+                     "observation": [("o1", "pA", _obs("o1"), DT2)]}}
     sent, conn, cur = _run_main(monkeypatch, data,
                                 clinical_views=["encounter", "observation"], global_views=[])
     # identity bundle first, then the clinical bundle — both to the mediator
     assert [(m, u) for m, u, _, _ in sent] == [("POST", L.MEDIATOR_URL), ("POST", L.MEDIATOR_URL)]
     assert _bundle_ids(sent[0][3]) == ["Patient/pA"]
     assert set(_bundle_ids(sent[1][3])) == {"Patient/pA", "Encounter/e1", "Observation/o1"}
-    assert _advances(cur) == {"patient": DT1, "encounter": DT1, "observation": DT2}
+    assert _marked(cur) == {"patient": {"pA": DT1}, "encounter": {"e1": DT1}, "observation": {"o1": DT2}}
     assert conn.committed is True
 
 
 def test_warm_posts_nothing(monkeypatch):
-    data = {"watermark": {"patient": DT2, "encounter": DT2, "observation": DT2},
-            "patients": {}, "delta": {"patient": [], "encounter": [], "observation": []}}
+    # everything already pushed at its current changed_at -> nothing pending, nothing posted
+    data = {"patients": {},
+            "pushed": {("patient", "pA"): DT2, ("encounter", "e1"): DT2, ("observation", "o1"): DT2},
+            "fhir": {"patient": [_pat_row("pA", DT2)],
+                     "encounter": [("e1", "pA", _enc("e1"), DT2)],
+                     "observation": [("o1", "pA", _obs("o1"), DT2)]}}
     sent, _, cur = _run_main(monkeypatch, data,
                              clinical_views=["encounter", "observation"], global_views=[])
     assert sent == []
-    assert _advances(cur) == {}          # nothing to advance
-    # queried the patient delta (paged) + each clinical view with the stored watermark
-    delta_sqls = [s for s, _ in cur.executed if "where changed_at" in s.lower()]
-    assert len(delta_sqls) == 1 + 2
+    assert _marked(cur) == {}            # nothing to mark
+    # queried the patient pending (paged) + each clinical view's pending
+    pend = [s for s, _ in cur.executed if "left join" in s.lower() and "pushed" in s.lower()]
+    assert len(pend) == 1 + 2
 
 
 def test_globals_post_bundle_to_mediator(monkeypatch):
     # global resources (Location) are bundled and POSTed to the mediator (which routes them to SHR)
     loc = json.dumps({"resourceType": "Location", "id": "11106"})
-    data = {"watermark": {}, "patients": {}, "delta": {"patient": []},
-            "globals": {"location": [("11106", loc)]}}
+    data = {"patients": {}, "fhir": {"patient": []}, "globals": {"location": [("11106", loc)]}}
     sent, _, _ = _run_main(monkeypatch, data, clinical_views=[], global_views=["location"])
     assert [(m, u) for m, u, _, _ in sent] == [("POST", L.MEDIATOR_URL)]
     assert _bundle_ids(sent[0][3]) == ["Location/11106"]
@@ -417,8 +436,8 @@ def _run_push_patients(monkeypatch, data, keys, clinical_views, send_result="200
 def test_push_patients_pushes_full_bundle_for_each_key(monkeypatch):
     # pA's FULL current state (patient + its clinical) is pushed; pB's obs is NOT (not requested)
     data = {"patients": {"pA": _pat("pA"), "pB": _pat("pB")},
-            "delta": {"encounter": [("e1", "pA", _enc("e1"), DT1)],
-                      "observation": [("o1", "pA", _obs("o1"), DT1), ("o9", "pB", _obs("o9"), DT1)]}}
+            "fhir": {"encounter": [("e1", "pA", _enc("e1"), DT1)],
+                     "observation": [("o1", "pA", _obs("o1"), DT1), ("o9", "pB", _obs("o9"), DT1)]}}
     sent, ok, fail = _run_push_patients(monkeypatch, data, ["pA"], ["encounter", "observation"])
     assert (ok, fail) == (1, 0)
     assert [(m, u) for m, u, _ in sent] == [("POST", L.MEDIATOR_URL)]
@@ -428,7 +447,7 @@ def test_push_patients_pushes_full_bundle_for_each_key(monkeypatch):
 
 
 def test_push_patients_one_bundle_per_key(monkeypatch):
-    data = {"patients": {"pA": _pat("pA"), "pB": _pat("pB")}, "delta": {"observation": []}}
+    data = {"patients": {"pA": _pat("pA"), "pB": _pat("pB")}, "fhir": {"observation": []}}
     sent, ok, fail = _run_push_patients(monkeypatch, data, ["pB", "pA"], ["observation"])
     assert (ok, fail) == (2, 0)
     # one POST per patient, sorted by key
@@ -436,13 +455,13 @@ def test_push_patients_one_bundle_per_key(monkeypatch):
 
 
 def test_push_patients_skips_missing_patient(monkeypatch):
-    data = {"patients": {}, "delta": {"observation": []}}
+    data = {"patients": {}, "fhir": {"observation": []}}
     sent, ok, fail = _run_push_patients(monkeypatch, data, ["pX"], ["observation"])
     assert (ok, fail) == (0, 0)        # skipped, not failed
     assert sent == []
 
 
 def test_push_patients_reports_failures(monkeypatch):
-    data = {"patients": {"pA": _pat("pA")}, "delta": {"observation": []}}
+    data = {"patients": {"pA": _pat("pA")}, "fhir": {"observation": []}}
     sent, ok, fail = _run_push_patients(monkeypatch, data, ["pA"], ["observation"], send_result="ERR 500: []")
     assert (ok, fail) == (0, 1)
