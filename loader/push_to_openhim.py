@@ -1,31 +1,40 @@
 #!/usr/bin/env python3
 """Push the FHIR that SQLMesh produced into SEDISH via the fhir-router mediator — incrementally.
 
-The loader no longer splits CR/SHR itself. It computes what changed (a per-resource high-water
-mark over the `changed_at` column the fhir.* models carry) and POSTs FHIR transaction Bundles to
-one OpenHIM channel — `/consolidated/fhir` — where the fhir-router mediator routes them:
+The loader no longer splits CR/SHR itself. It computes what changed — PER ENTRY, off the
+audit-derived `changed_at` column the fhir.* models carry — and POSTs FHIR transaction Bundles to
+one OpenHIM channel, `/consolidated/fhir`, where the fhir-router mediator routes them:
 Patient -> OpenCR (identity), clinical -> SHR, de-duping by resourceType/id.
 
+Change detection (why per-entry):
+  Each fhir.* row carries `changed_at` = GREATEST(date_updated, date_created, ...) from the source
+  audit columns, so an EDIT advances it just like an insert. We remember, per `fhir_id`, the
+  `changed_at` we last successfully pushed (the `loader_state.pushed` table) and re-push a row
+  whenever its current `changed_at` differs. This is order-independent: it catches a NEW patient,
+  an UPDATED patient, and even an edit whose timestamp is older than rows already pushed (a late /
+  out-of-order sync) — cases a single global high-water mark silently dropped. A row is marked
+  pushed only after its bundle succeeds, so a failed push is retried next cycle and nothing is
+  stranded.
+
 Each cycle:
-  1. identity  — page changed patients -> POST a bundle of patients      (mediator -> OpenCR)
+  1. identity  — patients whose state changed -> POST a bundle of patients      (mediator -> OpenCR)
   2. clinical  — changed enc/obs/... grouped per patient -> POST a bundle
                  (patient + its changed clinical)                        (mediator -> OpenCR + SHR)
   3. globals   — changed reference resources (Location, ...) -> POST a bundle  (mediator -> SHR)
-  4. advance each resource's watermark to the max changed_at it processed (only on full success)
 
-Idempotent: bundles PUT by id, so re-runs and overlaps converge. First run (epoch watermark)
-pushes everything (the initial load). Identity is paged so the ~2.39M initial load fits in memory.
-Clinical runs off its own watermarks: a patient reaches the SHR when its clinical changes (a
+Idempotent: bundles PUT by id, so re-runs and overlaps converge. First run (empty `pushed`) pushes
+everything (the initial load). Identity is paged so the ~2.39M initial load fits in memory. Clinical
+is driven off its own per-entry state: a patient reaches the SHR when its clinical changes (a
 demographics-only change goes to OpenCR only).
 
 Env (defaults = stock SEDISH swarm):
   FHIR_DB_HOST/PORT/USER/PASS/NAME    where SQLMesh wrote the fhir.* views (NAME=fhir)
-  STATE_DB                            isolated db for the watermark table (default loader_state)
+  STATE_DB                            isolated db for the push state (default loader_state)
   MEDIATOR_URL                        OpenHIM channel the fhir-router mediator serves
   OPENHIM_USER/OPENHIM_PASS           OpenHIM client basic-auth (default `consolidated`, role emr)
   CLINICAL_VIEWS                      patient-scoped clinical views to bundle (empty = identity-only)
   GLOBAL_VIEWS                        non-patient-scoped reference views (Location, ...)
-  DRY_RUN=1                           preview; don't POST and don't advance the watermark
+  DRY_RUN=1                           preview; don't POST and don't record pushed state
   SHR_FHIR_URL                        read-side SHR channel (reconcile.py only)
   SOURCE_TAG_SYSTEM/SOURCE_TAG_CODE   provenance tag stamped on every pushed resource so the
                                       reconcile step retracts only what this pipeline wrote
@@ -119,31 +128,50 @@ def ensure_state(cur):
         cur.execute(f"CREATE DATABASE IF NOT EXISTS {STATE_DB}")
     except Exception:  # noqa: BLE001 — STATE_DB may be a pre-created schema we lack CREATE on
         pass
+    # per-entry push state: the changed_at we last successfully pushed for each resource id.
+    cur.execute(f"""CREATE TABLE IF NOT EXISTS {STATE_DB}.pushed (
+                      resource_type VARCHAR(32) NOT NULL,
+                      fhir_id       VARCHAR(64) NOT NULL,
+                      changed_at    DATETIME    NOT NULL,
+                      PRIMARY KEY (resource_type, fhir_id))""")
+    # single-timestamp markers (used by reconcile.py for its own cadence gate, key '__reconcile__').
     cur.execute(f"""CREATE TABLE IF NOT EXISTS {STATE_DB}.loader_state (
                       resource_type VARCHAR(32) PRIMARY KEY,
                       last_changed_at DATETIME NOT NULL)""")
 
-def watermark(cur, rtype):
-    cur.execute(f"SELECT last_changed_at FROM {STATE_DB}.loader_state WHERE resource_type=%s", (rtype,))
-    row = cur.fetchone()
-    return row[0].strftime("%Y-%m-%d %H:%M:%S") if row else EPOCH
-
 def advance(cur, rtype, ts):
+    """Set the single-timestamp marker for `rtype` (reconcile.py's cadence gate)."""
     cur.execute(f"""INSERT INTO {STATE_DB}.loader_state (resource_type, last_changed_at) VALUES (%s,%s)
                     ON DUPLICATE KEY UPDATE last_changed_at=VALUES(last_changed_at)""", (rtype, ts))
 
-def delta(cur, view, cols, since):
-    cur.execute(f"SELECT {cols}, changed_at FROM fhir.{view} WHERE changed_at > %s", (since,))
+# --- per-entry change detection -------------------------------------------
+def _pending_sql(view, cols):
+    """SELECT for fhir.<view> rows that are new or whose changed_at moved past what we last pushed."""
+    select_cols = ", ".join(f"f.{c.strip()}" for c in cols.split(","))
+    return (f"SELECT {select_cols}, f.changed_at FROM fhir.{view} f "
+            f"LEFT JOIN {STATE_DB}.pushed p ON p.resource_type=%s AND p.fhir_id=f.fhir_id "
+            f"WHERE p.changed_at IS NULL OR f.changed_at > p.changed_at")
+
+def pending(cur, view, cols):
+    cur.execute(_pending_sql(view, cols), (view,))
     return cur.fetchall()
 
-def delta_page(cur, view, cols, since, limit, offset):
-    """One page of changed rows ordered deterministically for stable LIMIT/OFFSET pagination."""
-    cur.execute(
-        f"SELECT {cols}, changed_at FROM fhir.{view} "
-        f"WHERE changed_at > %s ORDER BY changed_at, fhir_id LIMIT %s OFFSET %s",
-        (since, limit, offset),
-    )
+def pending_page(cur, view, cols, limit, offset=0):
+    """One page of pending rows, ordered by fhir_id for stable pagination."""
+    cur.execute(_pending_sql(view, cols) + " ORDER BY f.fhir_id LIMIT %s OFFSET %s", (view, limit, offset))
     return cur.fetchall()
+
+def mark_pushed(cur, rtype, items):
+    """Record (fhir_id, changed_at) as pushed for `rtype` (batched upsert). `items`: iterable of pairs."""
+    items = list(items)
+    if not items:
+        return
+    for i in range(0, len(items), BATCH_SIZE):
+        chunk = items[i:i + BATCH_SIZE]
+        values = ",".join(["(%s,%s,%s)"] * len(chunk))
+        params = [x for fid, chg in chunk for x in (rtype, fid, chg)]
+        cur.execute(f"INSERT INTO {STATE_DB}.pushed (resource_type, fhir_id, changed_at) VALUES {values} "
+                    f"ON DUPLICATE KEY UPDATE changed_at=VALUES(changed_at)", params)
 
 def fetch_patients(cur, keys):
     """{fhir_id: patient_resource} for the given patient fhir_ids (chunked IN-lookups)."""
@@ -187,18 +215,6 @@ def build_bundle(resources):
             "entry": [{"resource": tag_source(r), "request": {"method": "PUT", "url": f"{r['resourceType']}/{r['id']}"}}
                       for r in resources]}
 
-def index_clinical(*row_groups):
-    """rows (fhir_id, patient_fhir_id, resource_json, changed_at) -> {patient_fhir_id: [resource_dict]}."""
-    out = collections.defaultdict(list)
-    for rows in row_groups:
-        for _, pid, res, _ in rows:
-            out[pid].append(json.loads(res))
-    return out
-
-def latest_changed(rows):
-    """max changed_at (last tuple element) across rows, or None when empty."""
-    return max((r[-1] for r in rows), default=None)
-
 def post_bundle(resources):
     """POST a transaction Bundle of `resources` to the mediator channel. Empty -> no-op '200'."""
     if not resources:
@@ -206,15 +222,15 @@ def post_bundle(resources):
     return send(MEDIATOR_URL, "POST", OPENHIM, build_bundle(resources))
 
 def push_identity(cur, conn):
-    """Page changed patients -> POST one bundle per page to the mediator (-> OpenCR). Paged to stay
-    memory-safe on the initial load. The patient watermark advances only when every page succeeded."""
-    wm = watermark(cur, "patient")
-    ok = fail = total = 0
-    max_changed = None
+    """Patients whose state changed since we last pushed them -> POST one bundle per page
+    (-> OpenCR). Paged to stay memory-safe on the initial load. A page is marked pushed (per entry)
+    and committed only on success; a failed page stops the loop and is retried next cycle. Because a
+    marked row leaves the pending set, live runs keep reading offset 0; DRY_RUN can't mark, so it
+    advances the offset to preview every page."""
+    ok = fail = total = pages = 0
     offset = 0
-    pages = 0
     while True:
-        page = delta_page(cur, "patient", "fhir_id, resource", wm, BATCH_SIZE, offset)
+        page = pending_page(cur, "patient", "fhir_id, resource", BATCH_SIZE, offset)
         if not page:
             break
         pages += 1
@@ -223,77 +239,82 @@ def push_identity(cur, conn):
         st = post_bundle(patients)
         ms = int((time.monotonic() - t0) * 1000)
         good = st in ("200", "201", "DRY_RUN")
-        ok, fail = ok + (len(patients) if good else 0), fail + (0 if good else len(patients))
-        lvl = "OK " if good else "ERR"
-        log(f"  identity[{lvl}] page={pages} offset={offset} n={len(patients)} {ms}ms -> {st}")
-        batch_max = latest_changed(page)
-        if batch_max and (max_changed is None or batch_max > max_changed):
-            max_changed = batch_max
+        log(f"  identity[{'OK ' if good else 'ERR'}] page={pages} n={len(patients)} {ms}ms -> {st}")
+        if not good:
+            fail += len(patients)
+            break                                   # stop; unmarked rows are retried next cycle
+        ok += len(patients)
         total += len(page)
-        offset += BATCH_SIZE
+        if DRY_RUN:
+            offset += BATCH_SIZE                     # nothing gets marked; step through to preview all
+        else:
+            mark_pushed(cur, "patient", [(r[0], r[-1]) for r in page])
+            conn.commit()                            # marked rows drop out -> keep reading offset 0
         if len(page) < BATCH_SIZE:
             break
-    if not DRY_RUN:
-        if fail == 0:
-            if max_changed is not None:        # only commit when there was something to advance
-                advance(cur, "patient", max_changed)
-                conn.commit()
-        elif total:
-            log(f"  identity: HOLDING watermark @ {wm} — {fail} patient(s) failed; retried next cycle")
-    log(f"  identity: done patients={total} ok={ok} fail={fail} pages={pages} "
-        f"(bundle size BATCH_SIZE={BATCH_SIZE})")
+    log(f"  identity: done patients={total} ok={ok} fail={fail} pages={pages} (BATCH_SIZE={BATCH_SIZE})")
     return fail
 
+def _commit_marks(cur, marks):
+    """Mark a patient's clinical entries pushed, grouped by view. `marks`: [(view, fhir_id, changed_at)]."""
+    by_view = collections.defaultdict(list)
+    for v, fid, chg in marks:
+        by_view[v].append((fid, chg))
+    for v, items in by_view.items():
+        mark_pushed(cur, v, items)
+
 def push_clinical(cur, conn):
-    """Changed clinical grouped per patient -> POST bundle(patient + its clinical) to the mediator
-    (-> OpenCR for the patient, SHR for the clinical). Driven by the clinical watermarks, so a
-    patient is pushed exactly when its clinical changes. Each view's watermark advances only on
-    full success."""
-    wm = {v: watermark(cur, v) for v in CLINICAL_VIEWS}
-    clinical = {v: delta(cur, v, "fhir_id, patient_fhir_id, resource", wm[v]) for v in CLINICAL_VIEWS}
-    clin_by_pat = index_clinical(*clinical.values())
+    """Clinical that changed since we last pushed it, grouped per patient -> POST bundle
+    (patient + its changed clinical) to the mediator (-> OpenCR for the patient, SHR for the
+    clinical). Per-entry: a clinical row is marked pushed only when its patient's bundle succeeds,
+    so an edit to any clinical resource re-pushes that patient regardless of global ordering."""
+    pending_rows = {v: pending(cur, v, "fhir_id, patient_fhir_id, resource") for v in CLINICAL_VIEWS}
+    clin_by_pat = collections.defaultdict(list)      # pid -> [resource dict]
+    marks_by_pat = collections.defaultdict(list)     # pid -> [(view, fhir_id, changed_at)]
+    for v, rows in pending_rows.items():
+        for fid, pid, res, chg in rows:
+            clin_by_pat[pid].append(json.loads(res))
+            marks_by_pat[pid].append((v, fid, chg))
     touched = sorted(clin_by_pat)
 
-    patient_by_id = fetch_patients(cur, touched)   # bundle reference target
+    patient_by_id = fetch_patients(cur, touched)     # bundle reference target
 
     ok = fail = skipped = 0
+    committed = False
     t0 = time.monotonic()
     for pid in touched:
         patient = patient_by_id.get(pid)
         if not patient:
-            # voided/filtered patient — skip; watermark still advances (FK order means not a race)
+            # voided/filtered patient — not pushable; mark its clinical pushed so it doesn't retry
+            # forever (a later real change advances changed_at and re-triggers it).
             skipped += 1
             log(f"  clinical[SKIP] {pid}: no Patient row (voided/absent)")
+            if not DRY_RUN:
+                _commit_marks(cur, marks_by_pat[pid])
+                committed = True
             continue
         st = post_bundle([patient, *clin_by_pat[pid]])
         good = st in ("200", "201", "DRY_RUN")
-        ok, fail = ok + good, fail + (not good)
-        if not good:                           # log every failure; successes roll up in the summary
-            log(f"  clinical[ERR] Patient/{pid} clin={len(clin_by_pat[pid])} -> {st}")
-    ms = int((time.monotonic() - t0) * 1000)
-
-    if not DRY_RUN:
-        if fail == 0:
-            advanced = False
-            for v, rows in clinical.items():
-                latest = latest_changed(rows)
-                if latest is not None:
-                    advance(cur, v, latest)
-                    advanced = True
-            if advanced:                       # only commit when a watermark actually moved
-                conn.commit()
+        if good:
+            ok += 1
+            if not DRY_RUN:
+                _commit_marks(cur, marks_by_pat[pid])
+                committed = True
         else:
-            log(f"  clinical: HOLDING watermarks — {fail} push(es) failed; retried next cycle")
-    deltas = " ".join(f"{v}={len(rows)}" for v, rows in clinical.items())
-    log(f"  clinical: done patients={len(touched)} ok={ok} fail={fail} skipped={skipped} "
-        f"{ms}ms (Δ {deltas})")
+            fail += 1
+            log(f"  clinical[ERR] Patient/{pid} clin={len(clin_by_pat[pid])} -> {st}")
+    if committed:
+        conn.commit()
+    ms = int((time.monotonic() - t0) * 1000)
+    deltas = " ".join(f"{v}={len(rows)}" for v, rows in pending_rows.items())
+    log(f"  clinical: done patients={len(touched)} ok={ok} fail={fail} skipped={skipped} {ms}ms (Δ {deltas})")
     return fail
 
 def push_patients(cur, keys):
     """Targeted push: for each patient key, POST its FULL current bundle (patient + all clinical) to
-    the mediator, regardless of any watermark. This is the key-driven path an event/CDC consumer
+    the mediator, regardless of pushed state. This is the key-driven path an event/CDC consumer
     calls (resolve changed patient -> push it), and is also handy for manual reconcile/backfill.
-    Idempotent (PUT by id). No watermark/commit — the caller owns its offset. Returns (ok, fail)."""
+    Idempotent (PUT by id). No state recorded — the caller owns its scope. Returns (ok, fail)."""
     keys = sorted(set(keys))
     patients = fetch_patients(cur, keys)
     clinical = fetch_clinical(cur, keys)
