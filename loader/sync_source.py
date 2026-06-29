@@ -86,13 +86,17 @@ def change_expr(scur, table):
     parts = [f"COALESCE(`{c}`, TIMESTAMP'{EPOCH}')" for c in cols]
     return f"GREATEST({', '.join(parts)})" if len(parts) > 1 else parts[0]
 
+def table_columns(cur, db, table):
+    """Ordered column names of a table, from information_schema."""
+    cur.execute("""SELECT column_name FROM information_schema.columns
+                   WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position""", (db, table))
+    return [r[0] for r in cur.fetchall()]
+
 def row_hash_expr(cur, db, table):
     """MD5 over all columns (NULL-safe, CHAR(31) separator) so a table with NO change timestamp can
     be diffed by content — additions, edits and deletions are all caught. Column list comes from the
     source; the local copy has the same columns (cloned DDL), so the expression is valid on both."""
-    cur.execute("""SELECT column_name FROM information_schema.columns
-                   WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position""", (db, table))
-    parts = ",".join(f"COALESCE(CAST(`{r[0]}` AS CHAR), CHAR(0))" for r in cur.fetchall())
+    parts = ",".join(f"COALESCE(CAST(`{c}` AS CHAR), CHAR(0))" for c in table_columns(cur, db, table))
     return f"MD5(CONCAT_WS(CHAR(31), {parts}))"
 
 def _newer(sval, lval):
@@ -111,13 +115,25 @@ def primary_key_cols(dcur, table):
     return [r[0] for r in dcur.fetchall()]
 
 def ensure_table(scur, dcur, table):
-    """Create the local table from the remote DDL if it's missing."""
+    """Create the local table from the remote DDL if it's missing. If it EXISTS but its column set
+    has DRIFTED from the source (e.g. CHARESS added/removed a column), log loudly and DROP + recreate
+    JUST this table: the local copy is a disposable mirror (no original data; fhir.* and loader_state
+    live in other schemas), so it is simply re-pulled (baseline) this same cycle. Left unhandled, a
+    column the local table lacks makes every REPLACE INTO fail and silently skip the table's rows."""
     dcur.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=%s AND table_name=%s", (DST_DB, table))
-    if not dcur.fetchone():
-        scur.execute(f"SHOW CREATE TABLE `{table}`")
-        dcur.execute(f"USE `{DST_DB}`")
-        dcur.execute(scur.fetchone()[1])
+    if dcur.fetchone():
+        src_cols = table_columns(scur, SRC["database"], table)
+        loc_cols = table_columns(dcur, DST_DB, table)
+        if set(src_cols) == set(loc_cols):
+            return
+        log(f"  !! SCHEMA DRIFT {table}: source cols {src_cols} != local {loc_cols} — dropping & "
+            f"recreating the local mirror copy of THIS table only (re-pulled this cycle)")
+        dcur.execute(f"DROP TABLE `{DST_DB}`.`{table}`")
         dcur.connection.commit()
+    scur.execute(f"SHOW CREATE TABLE `{table}`")
+    dcur.execute(f"USE `{DST_DB}`")
+    dcur.execute(scur.fetchone()[1])
+    dcur.connection.commit()
 
 def pk_chg(cur, table, pk, expr, local=False):
     """{pk_tuple: change_ts} for every row (ts is None when the table has no change columns)."""
