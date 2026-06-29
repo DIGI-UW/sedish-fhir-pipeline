@@ -18,9 +18,11 @@ voids, which are timestamped updates); a PK present locally but gone from the so
 The local copy IS the per-entry processed-state, so no separate watermark/state table is needed and
 updates are caught whenever they arrive, regardless of a time window.
 
-Tables with NO change timestamp (concept/concept_name/dimensions) are static reference data: copied
-once, then cached (a row's edits there are rare; re-copy by clearing the local table). A table with
-no primary key falls back to a full re-copy each cycle.
+Tables with NO change timestamp (e.g. locations, site) are diffed BY CONTENT instead: each cycle we
+read (primary key, MD5 of the whole row) from source and local and copy any row whose hash is new or
+differs, deleting those gone from source. This is stateless and catches additions, in-place edits
+AND deletions of reference data without a timestamp — and a partial copy self-heals (missing rows
+hash-differ and re-copy next cycle). A table with no primary key falls back to a full re-copy.
 
 Env:
   SRC_HOST/SRC_PORT/SRC_USER/SRC_PASS   external Consolidé MySQL (read-only)
@@ -52,8 +54,12 @@ DST_DB = env("DST_DB", "consolidated_db")
 BATCH = int(env("SYNC_BATCH", "5000"))
 # Emit a progress line roughly every this many rows while copying a (large) table.
 PROGRESS_EVERY = int(env("SYNC_PROGRESS_EVERY", "50000"))
-# Timestamp columns, most-recent-wins: date_changed/date_updated catch edits, date_created inserts.
-CHANGE_COLS = ("date_updated", "date_changed", "date_created")
+# Change-timestamp columns, most-recent-wins: *_updated/*_changed catch edits, *_created inserts.
+# Two naming conventions appear in consolidated_db: the OpenMRS audit columns (date_*) on the
+# *_openmrs / dimension tables, and created_at/updated_at on the derived tables (notably
+# national_fingerprint_mapping — the biometric fpnid/statut feed). Both must be recognised, or a
+# table that only has created_at/updated_at is mis-read as static and never re-syncs.
+CHANGE_COLS = ("date_updated", "date_changed", "date_created", "updated_at", "created_at")
 EPOCH = "1970-01-01 00:00:00"
 
 # Tables the SQLMesh models read — taken from external_models.yaml so it stays in lockstep.
@@ -79,6 +85,23 @@ def change_expr(scur, table):
         return None
     parts = [f"COALESCE(`{c}`, TIMESTAMP'{EPOCH}')" for c in cols]
     return f"GREATEST({', '.join(parts)})" if len(parts) > 1 else parts[0]
+
+def row_hash_expr(cur, db, table):
+    """MD5 over all columns (NULL-safe, CHAR(31) separator) so a table with NO change timestamp can
+    be diffed by content — additions, edits and deletions are all caught. Column list comes from the
+    source; the local copy has the same columns (cloned DDL), so the expression is valid on both."""
+    cur.execute("""SELECT column_name FROM information_schema.columns
+                   WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position""", (db, table))
+    parts = ",".join(f"COALESCE(CAST(`{r[0]}` AS CHAR), CHAR(0))" for r in cur.fetchall())
+    return f"MD5(CONCAT_WS(CHAR(31), {parts}))"
+
+def _newer(sval, lval):
+    """Per-entry timestamp comparison: source row is newer than the local copy."""
+    return sval is not None and (lval is None or sval > lval)
+
+def _differs(sval, lval):
+    """Content-hash comparison: source row's hash differs from the local copy's."""
+    return sval != lval
 
 def primary_key_cols(dcur, table):
     """PK column name(s) of the local table — keys the per-entry diff and names rows in failure logs."""
@@ -200,36 +223,34 @@ def full_copy(scur, dcur, table):
 
 def sync_table(scur, dcur, table):
     ensure_table(scur, dcur, table)
-    expr = change_expr(scur, table)
     pk = primary_key_cols(dcur, table)
 
-    # static reference (no change timestamp): copy once, then cache while populated
-    if expr is None:
-        dcur.execute(f"SELECT EXISTS(SELECT 1 FROM `{DST_DB}`.`{table}` LIMIT 1)")
-        if dcur.fetchone()[0]:
-            return 0, 0, 0, "static (cached)"
-        c, f = full_copy(scur, dcur, table)
-        return c, f, 0, "static (initial)"
-
-    # no primary key to diff on: full re-copy
+    # no primary key to diff/dedup on: full re-copy (TRUNCATE first, so never duplicates)
     if not pk:
         c, f = full_copy(scur, dcur, table)
         return c, f, 0, "full (no pk)"
 
+    # Pick the per-row "version" to diff on: the change timestamp if the table has one, else a
+    # content hash so no-timestamp reference tables are still diffed by content (not cached blind).
+    expr = change_expr(scur, table)
+    if expr is not None:
+        val_expr, mode, is_changed = expr, "per-entry", _newer
+    else:
+        val_expr, mode, is_changed = row_hash_expr(scur, SRC["database"], table), "content-hash", _differs
+
     # first time (empty local): a single full copy is cheaper than per-PK fetches
-    loc = pk_chg(dcur, table, pk, expr, local=True)
+    loc = pk_chg(dcur, table, pk, val_expr, local=True)
     if not loc:
         c, f = full_copy(scur, dcur, table)
         return c, f, 0, "baseline"
 
-    # per-entry diff: a row is changed if it's new or its source timestamp is newer than the local one
-    src = pk_chg(scur, table, pk, expr)
-    changed = [k for k, c in src.items()
-               if k not in loc or (c is not None and (loc[k] is None or c > loc[k]))]
+    # per-entry diff: a row is changed if it's new or its source version moved past the local copy
+    src = pk_chg(scur, table, pk, val_expr)
+    changed = [k for k, v in src.items() if k not in loc or is_changed(v, loc[k])]
     deleted = [k for k in loc if k not in src]
     copied, failed = copy_changed(scur, dcur, table, pk, changed)
     ndel = delete_gone(dcur, table, pk, deleted)
-    return copied, failed, ndel, "per-entry"
+    return copied, failed, ndel, mode
 
 def main():
     s = pymysql.connect(**SRC)
