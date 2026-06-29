@@ -81,3 +81,53 @@ def test_row_hash_expr_covers_all_columns_null_safe():
     for c in ("value_reference", "name", "active"):
         assert f"`{c}`" in expr
     assert "COALESCE(CAST(" in expr and "CHAR(0)" in expr   # NULL-safe per column
+
+
+# ----- schema-drift handling (#1 alert + B drop/recreate the ONE table) ----
+class DriftConn:
+    def commit(self): pass
+
+
+class DriftCursor:
+    """Answers ensure_table's queries: table-exists, column list, SHOW CREATE; records executed SQL."""
+    def __init__(self, cols, table_exists=True):
+        self.cols, self.table_exists = cols, table_exists
+        self.executed, self._r = [], None
+        self.connection = DriftConn()
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+        s = sql.lower()
+        if "information_schema.tables" in s:
+            self._r = [(1,)] if self.table_exists else []
+        elif "information_schema.columns" in s:
+            self._r = [(c,) for c in self.cols]
+        elif "show create table" in s:
+            self._r = [("t", "CREATE TABLE `t` (...)")]
+        else:
+            self._r = []
+    def fetchone(self): return self._r[0] if self._r else None
+    def fetchall(self): return list(self._r)
+
+
+def test_ensure_table_drops_and_recreates_on_column_drift():
+    src = DriftCursor(cols=["id", "mspp_code", "new_col"])          # source gained a column
+    loc = DriftCursor(cols=["id", "mspp_code"], table_exists=True)  # local is behind
+    S.ensure_table(src, loc, "national_fingerprint_mapping")
+    assert any("drop table" in s.lower() for s in loc.executed)     # only this table dropped
+    assert any("show create table" in s.lower() for s in src.executed)  # then recreated from source
+
+
+def test_ensure_table_no_drop_when_column_set_matches():
+    # same columns, different ORDER -> not drift (REPLACE maps by name); must NOT drop
+    src = DriftCursor(cols=["id", "mspp_code"])
+    loc = DriftCursor(cols=["mspp_code", "id"], table_exists=True)
+    S.ensure_table(src, loc, "t")
+    assert not any("drop table" in s.lower() for s in loc.executed)
+
+
+def test_ensure_table_creates_when_missing():
+    src = DriftCursor(cols=["id"])
+    loc = DriftCursor(cols=[], table_exists=False)
+    S.ensure_table(src, loc, "t")
+    assert not any("drop table" in s.lower() for s in loc.executed)  # nothing to drop
+    assert any("show create table" in s.lower() for s in src.executed)
