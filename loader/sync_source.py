@@ -32,6 +32,7 @@ Env:
 """
 import os
 import re
+import sys
 import time
 import pymysql
 
@@ -258,6 +259,11 @@ def main():
         elapsed = round(time.monotonic() - started, 1)
         log(f"sync done: {total} upserted, {dels} deleted across {len(tables)} tables in {elapsed}s"
             + (f" — {bad} row(s) skipped (see SKIP lines above)" if bad else ""))
+    return total + dels
+
+# Exit codes: 0 = changes applied this run; 20 = clean run, nothing changed (lets the
+# continuous loop skip the transform/push stages); anything else = error (raised above).
+NO_CHANGES_EXIT = 20
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else NO_CHANGES_EXIT)
