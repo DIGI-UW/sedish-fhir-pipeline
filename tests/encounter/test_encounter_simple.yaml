@@ -3,10 +3,10 @@ test_encounter_simple:
   inputs:
     consolidated_db.encounter_openmrs:
       format: csv
-      columns: {mspp_code: varchar(10), encounter_type: int, voided: int}
+      columns: {mspp_code: varchar(10), encounter_type: int, location_id: int, voided: int}
       rows: |
-        encounter_id,patient_id,mspp_code,encounter_datetime,encounter_type,uuid,voided
-        1,11,11106,2026-01-02 09:00:00,5,2650d51a-31b4-451b-a5fb-eb6e1a8c7a07,0
+        encounter_id,patient_id,mspp_code,encounter_datetime,encounter_type,location_id,uuid,voided
+        1,11,11106,2026-01-02 09:00:00,5,7,2650d51a-31b4-451b-a5fb-eb6e1a8c7a07,0
     consolidated_db.person_openmrs:
       format: csv
       columns: {mspp_code: varchar(10), voided: int}
@@ -19,8 +19,19 @@ test_encounter_simple:
       rows: |
         encounter_type_id,mspp_code,name,uuid
         5,11106,Consultation,9c48a6a2-b7b6-11e8-96f8-529269fb1459
+    consolidated_db.locations:
+      format: csv
+      columns: {location_id: int, value_reference: varchar(255), active: int}
+      rows: |
+        location_id,value_reference,name,active
+        7,73106,Ste Helene,1
   outputs:
     query:
+      # Exactly one row: the location LEFT JOIN resolves location_id 7 -> value_reference
+      # 73106 -> Location/id-73106 (the all-numeric code is prefixed by @FHIR_ID) without
+      # fanning the encounter out. The resource JSON itself isn't asserted here — MySQL
+      # reorders JSON object keys, so the engine compares the blob as an opaque string;
+      # see examples/encounter.json for the rendered Encounter.location shape.
       partial: true
       rows:
         - {mspp_code: '11106', encounter_id: 1, fhir_id: 2650d51a-31b4-451b-a5fb-eb6e1a8c7a07}

@@ -16,6 +16,15 @@ MODEL (
   audits (not_null(columns := (mspp_code, encounter_id, fhir_id)))
 );
 
+/*
+  encounter_openmrs -> FHIR Encounter. Encounter.location follows the OpenMRS fhir2
+  EncounterLocationTranslator: a single location[] component whose location reference points
+  at the Location resource, with the location name as display. We resolve encounter.location_id
+  through the consolidated `locations` table to its value_reference (the same key the
+  fhir.location model is built on), so the reference resolves to a Location we actually emit.
+  The `locations` table is a GLOBAL reference (no mspp_code), so the join is on location_id only.
+  Like fhir2, no physicalType/status/period is set on the location component.
+*/
 SELECT
   e.mspp_code,
   e.encounter_id,
@@ -23,6 +32,7 @@ SELECT
   @FHIR_ID(per.uuid) AS patient_fhir_id,
   COALESCE(e.date_updated, e.date_created, '1970-01-01 00:00:00') AS changed_at,
   JSON_MERGE_PATCH(
+   JSON_MERGE_PATCH(
     JSON_OBJECT(
       'resourceType', 'Encounter',
       'id', @FHIR_ID(e.uuid),
@@ -40,10 +50,23 @@ SELECT
                 'coding', JSON_ARRAY(JSON_OBJECT('code', et.uuid, 'display', et.name)),
                 'text', et.name)))
          ELSE JSON_OBJECT() END
+   ),
+   -- location: resolve encounter.location_id -> locations.value_reference -> Location/<id>.
+   -- Omitted (no breakage) when the location is unknown or unmapped in the locations table.
+   CASE WHEN el.value_reference IS NOT NULL
+        THEN JSON_OBJECT('location', JSON_ARRAY(JSON_OBJECT(
+               'location', JSON_OBJECT(
+                 'reference', CONCAT('Location/', @FHIR_ID(el.value_reference)),
+                 'type', 'Location',
+                 'display', el.name))))
+        ELSE JSON_OBJECT() END
   ) AS resource
 FROM consolidated_db.encounter_openmrs e
 JOIN consolidated_db.person_openmrs per
   ON per.mspp_code = e.mspp_code AND per.person_id = e.patient_id
 LEFT JOIN consolidated_db.encounter_type et
   ON et.encounter_type_id = e.encounter_type AND et.mspp_code = e.mspp_code
+-- locations is a GLOBAL reference table (no mspp_code) -> join on location_id only.
+LEFT JOIN consolidated_db.locations el
+  ON el.location_id = e.location_id
 WHERE COALESCE(e.voided, 0) = 0
