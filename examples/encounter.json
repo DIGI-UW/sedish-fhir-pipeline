@@ -17,6 +17,15 @@
     "code": "AMB",
     "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode"
   },
+  "location": [
+    {
+      "location": {
+        "type": "Location",
+        "display": "Ste Helene",
+        "reference": "Location/id-73106"
+      }
+    }
+  ],
   "period": {
     "start": "2026-01-02T09:00:00"
   },
