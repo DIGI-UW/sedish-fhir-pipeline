@@ -33,6 +33,15 @@ test_patient_with_national_id:
       rows: |
         patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
         1,11,11106,ST00160,3,1,0
+    consolidated_db.patient_identifier_type:
+      format: csv
+      columns: {patient_identifier_type_id: int}
+      rows: |
+        patient_identifier_type_id,name
+        3,iSantePlus ID
+        4,Code ST
+        5,Code National
+        9,Code PC
     consolidated_db.locations:
       format: csv
       columns: {location_id: int, value_reference: varchar(10), name: varchar(100)}
@@ -109,6 +118,15 @@ test_patient_arevoir_no_national_id:
       rows: |
         patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
         2,99,11202,PV00442,3,1,0
+    consolidated_db.patient_identifier_type:
+      format: csv
+      columns: {patient_identifier_type_id: int}
+      rows: |
+        patient_identifier_type_id,name
+        3,iSantePlus ID
+        4,Code ST
+        5,Code National
+        9,Code PC
     consolidated_db.locations:
       format: csv
       columns: {location_id: int, value_reference: varchar(10), name: varchar(100)}
