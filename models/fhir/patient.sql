@@ -82,9 +82,14 @@ idents AS (
          ) AS ident,
          COALESCE(pi.date_updated, pi.date_created) AS chg
   FROM consolidated_db.patient_identifier_openmrs pi
+  -- Resolve the system by identifier-type NAME, not the numeric id: patient_identifier_type ids are
+  -- not stable across source EMRs, so a positional (id-based) mapping mislabels identifiers (e.g. an
+  -- iSantePlus ID coming through as Code PC, a Code National as Code ST), which then fails to match
+  -- the site's real-time feed in OpenCR. Joining on name keeps it correct per facility.
+  JOIN consolidated_db.patient_identifier_type pit ON pit.patient_identifier_type_id = pi.identifier_type
   -- INNER JOIN: drop identifiers whose type isn't in the seed (no mapped system). A system-less
   -- identifier is useless to OpenCR/the SHR and showed up as a bare, unlabelled value in CRUX.
-  JOIN fhir.identifier_systems s ON s.identifier_type = pi.identifier_type
+  JOIN fhir.identifier_systems s ON s.label = pit.name
   LEFT JOIN consolidated_db.locations l ON l.location_id = pi.location_id
   WHERE COALESCE(pi.voided, 0) = 0
   UNION ALL
