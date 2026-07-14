@@ -89,7 +89,11 @@ idents AS (
   JOIN consolidated_db.patient_identifier_type pit ON pit.patient_identifier_type_id = pi.identifier_type
   -- INNER JOIN: drop identifiers whose type isn't in the seed (no mapped system). A system-less
   -- identifier is useless to OpenCR/the SHR and showed up as a bare, unlabelled value in CRUX.
-  JOIN fhir.identifier_systems s ON s.label = pit.name
+  -- Force a single collation on both sides: the seed table is created with the pipeline-db's
+  -- MySQL-8 default (utf8mb4_0900_ai_ci) while the synced source is utf8mb4_unicode_ci, and an
+  -- unqualified '=' between them raises "Illegal mix of collations" (MySQL 1267), failing the model.
+  JOIN fhir.identifier_systems s
+    ON s.label COLLATE utf8mb4_unicode_ci = pit.name COLLATE utf8mb4_unicode_ci
   LEFT JOIN consolidated_db.locations l ON l.location_id = pi.location_id
   WHERE COALESCE(pi.voided, 0) = 0
   UNION ALL
