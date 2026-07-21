@@ -116,6 +116,10 @@ LEFT JOIN consolidated_db.encounter_openmrs enc
   ON enc.mspp_code = o.mspp_code AND enc.encounter_id = o.encounter_id
 LEFT JOIN consolidated_db.concept qc ON qc.concept_id = o.concept_id
 LEFT JOIN consolidated_db.concept vc ON vc.concept_id = o.value_coded
+-- Drop demographic/address/social-registration concepts that are not clinical observations
+-- (redundant with Patient demographics; were polluting the IPS "Results & Observations"). The list
+-- is the configurable seed seeds/ref_excluded_obs_concepts.csv -> fhir.excluded_obs_concepts.
+LEFT JOIN fhir.excluded_obs_concepts xc ON xc.uuid = qc.uuid
 -- preferred name for the obs question concept (code.coding.display)
 LEFT JOIN (
   SELECT concept_id, COALESCE(MAX(CASE WHEN locale = 'en' THEN name END), MAX(name)) AS name
@@ -131,3 +135,4 @@ LEFT JOIN (
   GROUP BY concept_id
 ) vcn ON vcn.concept_id = o.value_coded
 WHERE COALESCE(o.voided, 0) = 0
+  AND xc.uuid IS NULL

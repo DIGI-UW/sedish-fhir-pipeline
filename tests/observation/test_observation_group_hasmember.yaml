@@ -43,6 +43,12 @@ test_observation_group_hasmember:
         5085,9b3f0c1e-0000-4000-8000-000000005085,10
         5089,4004e332-9d3a-460c-b7c9-a15afe29ce1d,5
         5090,8c5f0c1e-0000-4000-8000-000000005090,5
+    fhir.excluded_obs_concepts:
+      format: csv
+      columns: {uuid: text, name: text}
+      rows: |
+        uuid,name
+        00000000-0000-0000-0000-000000000000,placeholder-none
   outputs:
     query:
       partial: true
