@@ -1,12 +1,14 @@
-test_observation_numeric:
+test_observation_excludes_demographic:
+  # A demographic concept (Civil status) present in the excluded-concepts seed must NOT be emitted
+  # as an Observation: with only that obs as input, the model output is empty.
   model: fhir.observation
   inputs:
     consolidated_db.obs_openmrs:
       format: csv
-      columns: {mspp_code: varchar(10), concept_id: int, value_numeric: double, voided: int}
+      columns: {mspp_code: varchar(10), concept_id: int, voided: int}
       rows: |
-        obs_id,person_id,mspp_code,concept_id,encounter_id,obs_datetime,value_numeric,uuid,voided
-        1,11,11106,5089,1,2026-01-02 09:05:00,72.5,794e7296-a108-4a76-a50c-22ccd87cc9ba,0
+        obs_id,person_id,mspp_code,concept_id,encounter_id,obs_datetime,value_text,uuid,voided
+        2,11,11106,1054,1,2026-01-02 09:05:00,Never married,aaaa7296-a108-4a76-a50c-22ccd87cc9bb,0
     consolidated_db.person_openmrs:
       format: csv
       columns: {mspp_code: varchar(10), voided: int}
@@ -24,21 +26,19 @@ test_observation_numeric:
       columns: {concept_id: int, locale_preferred: int, voided: int}
       rows: |
         concept_name_id,concept_id,name,locale_preferred,concept_name_type,voided
-        1,5089,Weight (kg),1,FULLY_SPECIFIED,0
+        2,1054,Civil status,1,FULLY_SPECIFIED,0
     consolidated_db.concept:
       format: csv
       columns: {concept_id: int, class_id: int}
       rows: |
         concept_id,uuid,class_id
-        5089,4004e332-9d3a-460c-b7c9-a15afe29ce1d,5
+        1054,1054AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,7
     fhir.excluded_obs_concepts:
       format: csv
       columns: {uuid: text, name: text}
       rows: |
         uuid,name
-        00000000-0000-0000-0000-000000000000,placeholder-none
+        1054AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Civil status
   outputs:
     query:
-      partial: true
-      rows:
-        - {mspp_code: '11106', obs_id: 1, fhir_id: 794e7296-a108-4a76-a50c-22ccd87cc9ba}
+      rows: []
