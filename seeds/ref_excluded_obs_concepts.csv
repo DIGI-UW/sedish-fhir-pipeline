@@ -11,3 +11,16 @@ uuid,name
 162929AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Religion
 1354AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Village
 5940AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Village (alt)
+1572AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Place of birth
+2fe0575b-f0c3-40d2-a81e-8b516fe028ec,Mother's occupation
+c7042e3a-067b-47d9-8b7c-d3d6c3aa4782,Mother's religion
+ce5c2f42-a4c9-4fca-aacb-a502ac93255c,Mother's marital status
+1473AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Name of health care provider
+163529AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Health facility of prenatal care
+1648AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Patient referred
+5629AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Currently in school
+984AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Immunizations (-> Immunization.vaccineCode)
+1410AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Vaccination date (-> Immunization.occurrenceDateTime)
+1418AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Immunization sequence number (-> Immunization.protocolApplied.doseNumber)
+1421AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,Immunization history group (-> Immunization)
+d2947119-fa79-4903-842d-4b38b9d2856f,Immunization history other group (-> Immunization)

@@ -1,0 +1,52 @@
+test_immunization_group:
+  # Two vaccination obs groups become two FHIR Immunizations, one per group parent:
+  #   * parent 20 = IMMUNIZATION HISTORY (1421) with children vaccine(984)/date(1410)/dose(1418)
+  #   * parent 30 = "Immunization history Other group" (509165705) with only a vaccine(984) child
+  # The group members (984/1410/1418) must NOT each become their own Immunization -- only the two
+  # parents emit a row. (Resource JSON isn't asserted: MySQL reorders JSON keys, so the tests assert
+  # scalar columns, same as the observation tests.)
+  model: fhir.immunization
+  inputs:
+    consolidated_db.obs_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), concept_id: int, value_coded: int, value_numeric: double, value_datetime: datetime, obs_group_id: int, voided: int}
+      rows: |
+        obs_id,person_id,mspp_code,concept_id,encounter_id,obs_datetime,value_coded,value_numeric,value_datetime,obs_group_id,uuid,voided
+        20,11,11106,1421,1,2026-01-05 10:00:00,,,,,1a1f0c1e-0000-4000-8000-000000000020,0
+        21,11,11106,984,1,2026-01-05 10:00:00,783,,,20,2b2f0c1e-0000-4000-8000-000000000021,0
+        22,11,11106,1410,1,2026-01-05 10:00:00,,,2026-01-05 00:00:00,20,3c3f0c1e-0000-4000-8000-000000000022,0
+        23,11,11106,1418,1,2026-01-05 10:00:00,,1,,20,4d4f0c1e-0000-4000-8000-000000000023,0
+        30,11,11106,509165705,1,2026-02-01 08:00:00,,,,,5e5f0c1e-0000-4000-8000-000000000030,0
+        31,11,11106,984,1,2026-02-01 08:00:00,509166184,,,30,6f6f0c1e-0000-4000-8000-000000000031,0
+    consolidated_db.person_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), voided: int}
+      rows: |
+        person_id,mspp_code,uuid,voided
+        11,11106,fe5cae86-52a1-4713-b39d-4c05a9da3abf,0
+    consolidated_db.encounter_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), voided: int}
+      rows: |
+        encounter_id,patient_id,mspp_code,uuid,voided
+        1,11,11106,2650d51a-31b4-451b-a5fb-eb6e1a8c7a07,0
+    consolidated_db.concept_name:
+      format: csv
+      columns: {concept_id: int, locale_preferred: int, voided: int}
+      rows: |
+        concept_name_id,concept_id,name,locale,locale_preferred,voided
+        1,783,POLIO VACCINATION ORAL,en,1,0
+        2,509166184,Astrazeneca COVID-19 vaccine,en,1,0
+    consolidated_db.concept:
+      format: csv
+      columns: {concept_id: int, class_id: int}
+      rows: |
+        concept_id,uuid,class_id
+        783,9b3f0c1e-0000-4000-8000-000000000783,10
+        509166184,e8b2c0d0-0000-4000-8000-000509166184,10
+  outputs:
+    query:
+      partial: true
+      rows:
+        - {mspp_code: '11106', obs_id: 20, fhir_id: 1a1f0c1e-0000-4000-8000-000000000020, patient_fhir_id: fe5cae86-52a1-4713-b39d-4c05a9da3abf}
+        - {mspp_code: '11106', obs_id: 30, fhir_id: 5e5f0c1e-0000-4000-8000-000000000030, patient_fhir_id: fe5cae86-52a1-4713-b39d-4c05a9da3abf}
