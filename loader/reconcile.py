@@ -83,20 +83,29 @@ def expected_ids_for_view(cur, view):
     return [row[0] for row in cur.fetchall()]
 
 def shr_ids_for_type(rtype):
-    """Every id of `rtype` THIS pipeline has written to the SHR (paged search by provenance _tag)."""
+    """Every id of `rtype` THIS pipeline has written to the SHR (paged search by provenance _tag).
+
+    Pages by `_offset` rather than following the bundle's `next` link: behind OpenHIM, HAPI emits
+    next links pointing at its own internal base (http://hapi-fhir:8080/...), which is unreachable
+    from here — following them silently caps the scan at the first page and hides orphans. Offset
+    paging against the OpenHIM SHR base is stable when combined with `_sort=_id`."""
     tag = f"{L.SOURCE_TAG_SYSTEM}|{L.SOURCE_TAG_CODE}"
-    url = (f"{L.SHR_FHIR_URL}/{rtype}?_tag={urllib.parse.quote(tag, safe='')}"
-           f"&_elements=id&_count={SHR_PAGE}")
     ids = []
-    while url:
+    offset = 0
+    while True:
+        url = (f"{L.SHR_FHIR_URL}/{rtype}?_tag={urllib.parse.quote(tag, safe='')}"
+               f"&_elements=id&_sort=_id&_count={SHR_PAGE}&_offset={offset}")
         body = L.http_get(url, L.OPENHIM)
         if not body:
             break
-        for entry in body.get("entry", []):
+        entries = body.get("entry", [])
+        for entry in entries:
             rid = (entry.get("resource") or {}).get("id")
             if rid:
                 ids.append(rid)
-        url = next((lk.get("url") for lk in body.get("link", []) if lk.get("relation") == "next"), None)
+        if len(entries) < SHR_PAGE:
+            break
+        offset += SHR_PAGE
     return ids
 
 def retract(cur):
