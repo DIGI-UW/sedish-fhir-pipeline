@@ -190,9 +190,13 @@ SELECT
      JSON_OBJECT(
       'resourceType', 'Patient',
       'id', @FHIR_ID(per.uuid),
-      -- facility provenance: originating site (mspp_code).
+      -- facility provenance: originating site. code = mspp_code (machine), display = the facility
+      -- name resolved from the MSPP registry (consolidated_db.locations.value_reference), falling
+      -- back to the code when the site has no registry entry (e.g. synthetic test codes).
       'meta', JSON_OBJECT('tag', JSON_ARRAY(JSON_OBJECT(
-                'system', @VAR('mspp_site_system', 'http://sedish-haiti.org/fhir/mspp-site'), 'code', pt.mspp_code))),
+                'system', @VAR('mspp_site_system', 'http://sedish-haiti.org/fhir/mspp-site'),
+                'code', pt.mspp_code,
+                'display', COALESCE(site_loc.name, pt.mspp_code)))),
       'active', CAST(IF(COALESCE(per.voided, 0) = 0, 'true', 'false') AS JSON),
       'gender', CASE
                   WHEN per.gender IN ('M', 'Male') THEN 'male'
@@ -243,5 +247,8 @@ LEFT JOIN addresses ad ON ad.mspp_code = pt.mspp_code AND ad.person_id = pt.pati
 LEFT JOIN identifiers ids ON ids.mspp_code = pt.mspp_code AND ids.patient_id = pt.patient_id
 LEFT JOIN fp_chg fp  ON fp.mspp_code  = pt.mspp_code AND fp.patient_id  = pt.patient_id
 LEFT JOIN phones ph  ON ph.mspp_code  = pt.mspp_code AND ph.person_id   = pt.patient_id
+-- site name lookup: locations.value_reference is the MSPP facility code (= the site's mspp_code);
+-- global registry (value_reference is its PK, so this is a 1:1 lookup, no fan-out).
+LEFT JOIN consolidated_db.locations site_loc ON site_loc.value_reference = pt.mspp_code
 LEFT JOIN mothers mo ON mo.mspp_code  = pt.mspp_code AND mo.patient_id  = pt.patient_id
 WHERE COALESCE(pt.voided, 0) = 0
