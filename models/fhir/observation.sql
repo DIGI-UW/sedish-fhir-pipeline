@@ -136,3 +136,9 @@ LEFT JOIN (
 ) vcn ON vcn.concept_id = o.value_coded
 WHERE COALESCE(o.voided, 0) = 0
   AND xc.uuid IS NULL
+  -- Drop observations whose question concept has no resolvable name. With no name, code.display and
+  -- code.text are both null, so the IPS renders the raw code -- a padded CIEL uuid like
+  -- "509167110AAAA..." -- as the observation name. This happens when the concept is absent from the
+  -- consolidated concept dimension (CHARESS dump gap) or is the concept_id 0 placeholder (~160 junk
+  -- obs). An observation we cannot name is not useful in a human-readable summary.
+  AND cn.name IS NOT NULL
