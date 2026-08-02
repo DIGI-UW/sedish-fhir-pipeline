@@ -33,6 +33,14 @@ test_patient_with_national_id:
       rows: |
         patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
         1,11,11106,ST00160,3,1,0
+    consolidated_db.obs_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), concept_id: int, value_text: varchar(255), obs_group_id: int, voided: int}
+      rows: |
+        obs_id,person_id,mspp_code,concept_id,value_text,obs_group_id,voided
+        90,11,11106,165194,,,0
+        91,11,11106,165197,Ouest,90,0
+        92,11,11106,1354,Port-au-Prince,90,0
     consolidated_db.patient_identifier_type:
       format: csv
       columns: {patient_identifier_type_id: int}
@@ -118,6 +126,14 @@ test_patient_arevoir_no_national_id:
       rows: |
         patient_identifier_id,patient_id,mspp_code,identifier,identifier_type,preferred,voided
         2,99,11202,PV00442,3,1,0
+    consolidated_db.obs_openmrs:
+      format: csv
+      columns: {mspp_code: varchar(10), concept_id: int, value_text: varchar(255), obs_group_id: int, voided: int}
+      rows: |
+        obs_id,person_id,mspp_code,concept_id,value_text,obs_group_id,voided
+        90,11,11106,165194,,,0
+        91,11,11106,165197,Ouest,90,0
+        92,11,11106,1354,Port-au-Prince,90,0
     consolidated_db.patient_identifier_type:
       format: csv
       columns: {patient_identifier_type_id: int}
