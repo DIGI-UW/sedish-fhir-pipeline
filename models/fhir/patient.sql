@@ -171,6 +171,24 @@ mothers AS (
     AND LOWER(TRIM(mother_name)) NOT IN ('unknown', 'inconnu', 'inconnue', 'n/a', 'na', 'none', '-', '?')
     AND COALESCE(voided, 0) = 0
   GROUP BY mspp_code, patient_id
+),
+-- Lieu de naissance: the registration obs group (165194) with one member per address level.
+-- Values are whatever the source form saved (names on recent records, hierarchy ids on older
+-- ones); emitted as-is in the standard patient-birthPlace extension — the consuming EMR's
+-- register page matches its (identically-seeded) hierarchy options by text or value.
+birthplaces AS (
+  SELECT g.mspp_code, g.person_id AS patient_id,
+         MAX(CASE WHEN m.concept_id = 165197 THEN m.value_text END) AS bp_departement,
+         MAX(CASE WHEN m.concept_id = 1354   THEN m.value_text END) AS bp_commune,
+         MAX(CASE WHEN m.concept_id = 165196 THEN m.value_text END) AS bp_section,
+         MAX(CASE WHEN m.concept_id = 165195 THEN m.value_text END) AS bp_localite,
+         MAX(CASE WHEN m.concept_id = 162725 THEN m.value_text END) AS bp_adresse,
+         MAX(CASE WHEN m.concept_id = 165198 THEN m.value_text END) AS bp_pays
+  FROM consolidated_db.obs_openmrs g
+  JOIN consolidated_db.obs_openmrs m
+    ON m.mspp_code = g.mspp_code AND m.obs_group_id = g.obs_id AND COALESCE(m.voided, 0) = 0
+  WHERE g.concept_id = 165194 AND COALESCE(g.voided, 0) = 0
+  GROUP BY g.mspp_code, g.person_id
 )
 SELECT
   pt.mspp_code,
@@ -230,14 +248,39 @@ SELECT
    --     on a plain path; contact.name.text is that path. Without this the mother rule is inert.
    CASE WHEN mo.mother_name IS NOT NULL
         THEN JSON_OBJECT(
-               'extension', JSON_ARRAY(JSON_OBJECT(
-                 'url', 'http://hl7.org/fhir/StructureDefinition/patient-mothersMaidenName',
-                 'valueString', mo.mother_name)),
                'contact', JSON_ARRAY(JSON_OBJECT(
                  'relationship', JSON_ARRAY(JSON_OBJECT('coding', JSON_ARRAY(JSON_OBJECT(
                    'system', 'http://terminology.hl7.org/CodeSystem/v3-RoleCode', 'code', 'MTH')))),
                  'name', JSON_OBJECT('text', mo.mother_name))))
-        ELSE JSON_OBJECT() END
+        ELSE JSON_OBJECT() END,
+   -- Extensions built as ONE array (JSON_MERGE_PATCH replaces arrays, so the mother and
+   -- birthplace extensions cannot be merged from separate blocks).
+   CASE
+     WHEN mo.mother_name IS NOT NULL AND bp.mspp_code IS NOT NULL
+       THEN JSON_OBJECT('extension', JSON_ARRAY(
+              JSON_OBJECT('url', 'http://hl7.org/fhir/StructureDefinition/patient-mothersMaidenName', 'valueString', mo.mother_name),
+              JSON_OBJECT('url', 'http://hl7.org/fhir/StructureDefinition/patient-birthPlace',
+                 'valueAddress', JSON_OBJECT(
+                   'city', bp.bp_commune, 'state', bp.bp_departement, 'country', bp.bp_pays,
+                   'extension', JSON_ARRAY(JSON_OBJECT(
+                     'url', 'http://fhir.openmrs.org/ext/address',
+                     'extension', JSON_ARRAY(
+                       JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address1', 'valueString', bp.bp_localite),
+                       JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address2', 'valueString', bp.bp_adresse),
+                       JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address3', 'valueString', bp.bp_section))))))))
+     WHEN mo.mother_name IS NOT NULL
+       THEN JSON_OBJECT('extension', JSON_ARRAY(JSON_OBJECT('url', 'http://hl7.org/fhir/StructureDefinition/patient-mothersMaidenName', 'valueString', mo.mother_name)))
+     WHEN bp.mspp_code IS NOT NULL
+       THEN JSON_OBJECT('extension', JSON_ARRAY(JSON_OBJECT('url', 'http://hl7.org/fhir/StructureDefinition/patient-birthPlace',
+                 'valueAddress', JSON_OBJECT(
+                   'city', bp.bp_commune, 'state', bp.bp_departement, 'country', bp.bp_pays,
+                   'extension', JSON_ARRAY(JSON_OBJECT(
+                     'url', 'http://fhir.openmrs.org/ext/address',
+                     'extension', JSON_ARRAY(
+                       JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address1', 'valueString', bp.bp_localite),
+                       JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address2', 'valueString', bp.bp_adresse),
+                       JSON_OBJECT('url', 'http://fhir.openmrs.org/ext/address#address3', 'valueString', bp.bp_section))))))))
+     ELSE JSON_OBJECT() END
   ) AS resource
 FROM consolidated_db.patient_openmrs pt
 JOIN consolidated_db.person_openmrs per
@@ -251,4 +294,5 @@ LEFT JOIN phones ph  ON ph.mspp_code  = pt.mspp_code AND ph.person_id   = pt.pat
 -- global registry (value_reference is its PK, so this is a 1:1 lookup, no fan-out).
 LEFT JOIN consolidated_db.locations site_loc ON site_loc.value_reference = pt.mspp_code
 LEFT JOIN mothers mo ON mo.mspp_code  = pt.mspp_code AND mo.patient_id  = pt.patient_id
+LEFT JOIN birthplaces bp ON bp.mspp_code = pt.mspp_code AND bp.patient_id = pt.patient_id
 WHERE COALESCE(pt.voided, 0) = 0
