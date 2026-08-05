@@ -1,0 +1,13 @@
+# Local build hygiene: `COPY . /app` would otherwise bake a developer's config.yaml -- which holds
+# the Consolide credentials and is gitignored, so it exists only in working trees -- into the image.
+config.yaml
+.git
+.gitignore
+logs/
+.venv
+__pycache__/
+*.pyc
+.cache
+.pytest_cache
+.mypy_cache
+*.egg-info

@@ -26,6 +26,10 @@ MODEL (
   (via GREATEST) so the parent re-pushes with an up-to-date hasMember.
 */
 WITH members AS (
+  -- A child referenced here MUST also survive the final SELECT's filters, otherwise the parent
+  -- ships a hasMember pointing at an Observation that is in neither the bundle nor the SHR --
+  -- and HAPI (enforce_referential_integrity_on_write=true) rejects the WHOLE transaction bundle.
+  -- So the excluded-concept and resolvable-name predicates are repeated verbatim below.
   SELECT c.mspp_code,
          c.obs_group_id,
          JSON_ARRAYAGG(JSON_OBJECT(
@@ -33,7 +37,18 @@ WITH members AS (
            'type', 'Observation')) AS arr,
          MAX(COALESCE(c.date_updated, c.date_changed, c.date_created, '1970-01-01 00:00:00')) AS chg
   FROM consolidated_db.obs_openmrs c
+  LEFT JOIN consolidated_db.concept cqc ON cqc.concept_id = c.concept_id
+  LEFT JOIN fhir.excluded_obs_concepts cxc
+    ON cxc.uuid COLLATE utf8mb4_unicode_ci = cqc.uuid COLLATE utf8mb4_unicode_ci
+  LEFT JOIN (
+    SELECT concept_id, COALESCE(MAX(CASE WHEN locale = 'en' THEN name END), MAX(name)) AS name
+    FROM consolidated_db.concept_name
+    WHERE locale_preferred = 1 AND COALESCE(voided, 0) = 0
+    GROUP BY concept_id
+  ) ccn ON ccn.concept_id = c.concept_id
   WHERE c.obs_group_id IS NOT NULL AND COALESCE(c.voided, 0) = 0
+    AND cxc.uuid IS NULL
+    AND ccn.name IS NOT NULL
   GROUP BY c.mspp_code, c.obs_group_id
 )
 SELECT
@@ -42,7 +57,7 @@ SELECT
   @FHIR_ID(o.uuid) AS fhir_id,
   @FHIR_ID(per.uuid) AS patient_fhir_id,
   GREATEST(
-    COALESCE(o.date_updated, o.date_created, '1970-01-01 00:00:00'),
+    COALESCE(o.date_updated, o.date_changed, o.date_created, '1970-01-01 00:00:00'),
     COALESCE(mem.chg, '1970-01-01 00:00:00')
   ) AS changed_at,
   JSON_MERGE_PATCH(
@@ -119,7 +134,8 @@ LEFT JOIN consolidated_db.concept vc ON vc.concept_id = o.value_coded
 -- Drop demographic/address/social-registration concepts that are not clinical observations
 -- (redundant with Patient demographics; were polluting the IPS "Results & Observations"). The list
 -- is the configurable seed seeds/ref_excluded_obs_concepts.csv -> fhir.excluded_obs_concepts.
-LEFT JOIN fhir.excluded_obs_concepts xc ON xc.uuid = qc.uuid
+LEFT JOIN fhir.excluded_obs_concepts xc
+  ON xc.uuid COLLATE utf8mb4_unicode_ci = qc.uuid COLLATE utf8mb4_unicode_ci
 -- preferred name for the obs question concept (code.coding.display)
 LEFT JOIN (
   SELECT concept_id, COALESCE(MAX(CASE WHEN locale = 'en' THEN name END), MAX(name)) AS name

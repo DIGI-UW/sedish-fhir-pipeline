@@ -38,7 +38,7 @@ SELECT
   e.encounter_id,
   @FHIR_ID(e.uuid) AS fhir_id,
   @FHIR_ID(per.uuid) AS patient_fhir_id,
-  COALESCE(e.date_updated, e.date_created, '1970-01-01 00:00:00') AS changed_at,
+  COALESCE(e.date_updated, e.date_changed, e.date_created, '1970-01-01 00:00:00') AS changed_at,
   JSON_MERGE_PATCH(
    JSON_MERGE_PATCH(
     JSON_MERGE_PATCH(

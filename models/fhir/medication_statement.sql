@@ -51,11 +51,13 @@ dose AS (
          NULLIF(CONCAT_WS(' | ',
            MAX(CASE WHEN concept_id = 1444
                     THEN CONVERT(COALESCE(value_text, CAST(value_numeric AS CHAR)) USING utf8mb4) END),
+           MAX(CASE WHEN concept_id = 160855
+                    THEN CONVERT(COALESCE(value_text, CAST(value_numeric AS CHAR)) USING utf8mb4) END),
            MAX(CASE WHEN concept_id = 159368 AND value_numeric IS NOT NULL
                     THEN CONCAT(CONVERT(CAST(value_numeric AS CHAR) USING utf8mb4), ' day(s)') END)
          ), '') AS text
   FROM consolidated_db.obs_openmrs
-  WHERE concept_id IN (1444, 159368) AND COALESCE(voided, 0) = 0
+  WHERE concept_id IN (1444, 160855, 159368) AND COALESCE(voided, 0) = 0
   GROUP BY mspp_code, obs_group_id
 ),
 indication AS (

@@ -465,3 +465,11 @@ def test_push_patients_reports_failures(monkeypatch):
     data = {"patients": {"pA": _pat("pA")}, "fhir": {"observation": []}}
     sent, ok, fail = _run_push_patients(monkeypatch, data, ["pA"], ["observation"], send_result="ERR 500: []")
     assert (ok, fail) == (0, 1)
+
+
+def test_pending_sql_repushes_when_changed_at_moves_backwards():
+    """changed_at aggregates children, so voiding one lowers it. A '>' comparison would strand that
+    row for ever (audit P1-10); the fake cursor re-implements this SQL, so assert the real string."""
+    sql = L._pending_sql("observation", "fhir_id, resource")
+    assert "f.changed_at <> p.changed_at" in sql
+    assert "f.changed_at > p.changed_at" not in sql

@@ -146,11 +146,16 @@ def advance(cur, rtype, ts):
 
 # --- per-entry change detection -------------------------------------------
 def _pending_sql(view, cols):
-    """SELECT for fhir.<view> rows that are new or whose changed_at moved past what we last pushed."""
+    """SELECT for fhir.<view> rows that are new or whose changed_at DIFFERS from what we last pushed.
+
+    Differs, not "is greater than": changed_at aggregates children (GREATEST over names, addresses,
+    identifiers, obs group members), so voiding a child LOWERS it. With a `>` test such a row would
+    never be re-pushed and the parent would keep a stale hasMember for good.
+    """
     select_cols = ", ".join(f"f.{c.strip()}" for c in cols.split(","))
     return (f"SELECT {select_cols}, f.changed_at FROM fhir.{view} f "
             f"LEFT JOIN {STATE_DB}.pushed p ON p.resource_type=%s AND p.fhir_id=f.fhir_id "
-            f"WHERE p.changed_at IS NULL OR f.changed_at > p.changed_at")
+            f"WHERE p.changed_at IS NULL OR f.changed_at <> p.changed_at")
 
 def pending(cur, view, cols):
     cur.execute(_pending_sql(view, cols), (view,))
