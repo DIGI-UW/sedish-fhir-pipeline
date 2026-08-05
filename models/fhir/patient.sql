@@ -195,8 +195,8 @@ SELECT
   pt.patient_id,
   @FHIR_ID(per.uuid) AS fhir_id,
   GREATEST(
-    COALESCE(per.date_updated, per.date_created, '1970-01-01 00:00:00'),
-    COALESCE(pt.date_updated,  pt.date_created,  '1970-01-01 00:00:00'),
+    COALESCE(per.date_updated, per.date_changed, per.date_created, '1970-01-01 00:00:00'),
+    COALESCE(pt.date_updated,  pt.date_changed,  pt.date_created,  '1970-01-01 00:00:00'),
     COALESCE(nm.chg,   '1970-01-01 00:00:00'),
     COALESCE(ad.chg,   '1970-01-01 00:00:00'),
     COALESCE(ids.chg,  '1970-01-01 00:00:00'),
