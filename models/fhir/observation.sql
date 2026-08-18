@@ -39,7 +39,8 @@ WITH members AS (
   FROM consolidated_db.obs_openmrs c
   LEFT JOIN consolidated_db.concept cqc ON cqc.concept_id = c.concept_id
   LEFT JOIN fhir.excluded_obs_concepts cxc
-    ON cxc.uuid COLLATE utf8mb4_unicode_ci = cqc.uuid COLLATE utf8mb4_unicode_ci
+    ON CONVERT(cxc.uuid USING utf8mb4) COLLATE utf8mb4_unicode_ci
+       = CONVERT(cqc.uuid USING utf8mb4) COLLATE utf8mb4_unicode_ci
   LEFT JOIN (
     SELECT concept_id, COALESCE(MAX(CASE WHEN locale = 'en' THEN name END), MAX(name)) AS name
     FROM consolidated_db.concept_name
@@ -135,7 +136,8 @@ LEFT JOIN consolidated_db.concept vc ON vc.concept_id = o.value_coded
 -- (redundant with Patient demographics; were polluting the IPS "Results & Observations"). The list
 -- is the configurable seed seeds/ref_excluded_obs_concepts.csv -> fhir.excluded_obs_concepts.
 LEFT JOIN fhir.excluded_obs_concepts xc
-  ON xc.uuid COLLATE utf8mb4_unicode_ci = qc.uuid COLLATE utf8mb4_unicode_ci
+  ON CONVERT(xc.uuid USING utf8mb4) COLLATE utf8mb4_unicode_ci
+     = CONVERT(qc.uuid USING utf8mb4) COLLATE utf8mb4_unicode_ci
 -- preferred name for the obs question concept (code.coding.display)
 LEFT JOIN (
   SELECT concept_id, COALESCE(MAX(CASE WHEN locale = 'en' THEN name END), MAX(name)) AS name

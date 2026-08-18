@@ -100,7 +100,8 @@ idents AS (
   -- MySQL-8 default (utf8mb4_0900_ai_ci) while the synced source is utf8mb4_unicode_ci, and an
   -- unqualified '=' between them raises "Illegal mix of collations" (MySQL 1267), failing the model.
   JOIN fhir.identifier_systems s
-    ON s.label COLLATE utf8mb4_unicode_ci = pit.name COLLATE utf8mb4_unicode_ci
+    ON CONVERT(s.label USING utf8mb4) COLLATE utf8mb4_unicode_ci
+     = CONVERT(pit.name USING utf8mb4) COLLATE utf8mb4_unicode_ci
   LEFT JOIN consolidated_db.locations l ON l.location_id = pi.location_id
   WHERE COALESCE(pi.voided, 0) = 0
   UNION ALL
