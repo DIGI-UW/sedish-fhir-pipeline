@@ -410,6 +410,24 @@
   gateway: mysql
 
 # iSantePlus DERIVED diagnoses table (no uuid -> Condition uses a synthetic id).
+- name: '`consolidated_db`.`diagnosis`'
+  columns:
+    location_id: INT
+    mspp_code: VARCHAR(10)
+    patient_id: INT
+    encounter_id: INT
+    code: INT
+    group_id: INT
+    name: VARCHAR(255)
+    diagnosed: DATETIME
+    nature: VARCHAR(50)
+    position: VARCHAR(50)
+    certainty: VARCHAR(50)
+    voided: TINYINT
+    date_voided: DATETIME
+    date_inserted: DATETIME
+    date_updated: DATETIME
+  gateway: mysql
 - name: '`consolidated_db`.`patient_diagnosis`'
   columns:
     patient_id: INT
